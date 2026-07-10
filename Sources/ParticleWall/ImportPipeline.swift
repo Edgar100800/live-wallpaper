@@ -117,6 +117,8 @@ final class ImportPipeline {
 
     /// Import the user module and instantiate its exported class with the body
     /// element as container (the shape the particle-export tools produce).
+    /// The exports have no camera animation of their own, so the bootstrap adds
+    /// a slow orbit around the origin when the instance exposes a camera.
     static func moduleBootstrap(for code: String) -> String {
         let named = #"export\s+class\s+(\w+)"#
         let defaulted = #"export\s+default\s+class\s+(\w+)?"#
@@ -124,7 +126,8 @@ final class ImportPipeline {
         if code.range(of: defaulted, options: .regularExpression) != nil {
             return """
             import UserWallpaper from './assets/user-module.js';
-            new UserWallpaper(document.body);
+            const __pwInstance = new UserWallpaper(document.body);
+            \(cameraOrbitScript)
             """
         }
         if let match = code.range(of: named, options: .regularExpression) {
@@ -133,10 +136,57 @@ final class ImportPipeline {
                                                                      options: .regularExpression)
             return """
             import { \(className) } from './assets/user-module.js';
-            new \(className)(document.body);
+            const __pwInstance = new \(className)(document.body);
+            \(cameraOrbitScript)
             """
         }
         return "import './assets/user-module.js';"
+    }
+
+    /// Slow camera orbit: keeps static formations (grids, cubes) alive and shows
+    /// them in 3D. Runs through requestAnimationFrame, so the injected rAF patch
+    /// applies the global pause and FPS cap to it too.
+    static let cameraOrbitScript = """
+    (function () {
+      const inst = __pwInstance;
+      if (!inst || !inst.camera || !inst.camera.position || !inst.camera.lookAt) return;
+      const cam = inst.camera;
+      const p = cam.position;
+      const R = Math.sqrt(p.x * p.x + p.y * p.y + p.z * p.z) || 100;
+      const el0 = Math.asin(Math.max(-1, Math.min(1, p.y / R)));
+      let angle = Math.atan2(p.x, p.z);
+      function orbit() {
+        requestAnimationFrame(orbit);
+        if (window.__pwPaused) return;
+        angle += 0.0015;
+        const el = el0 + Math.sin(angle * 0.7) * 0.15;
+        cam.position.set(
+          R * Math.cos(el) * Math.sin(angle),
+          R * Math.sin(el),
+          R * Math.cos(el) * Math.cos(angle)
+        );
+        cam.lookAt(0, 0, 0);
+      }
+      requestAnimationFrame(orbit);
+    })();
+    """
+
+    /// Regenerate index.html of existing es-module wallpapers from the current
+    /// template + bootstrap. Idempotent: rewrites only when the output differs.
+    func upgradeModuleWallpapers() {
+        guard let templateURL = Bundle.module.url(forResource: "template-module", withExtension: "html"),
+              let template = try? String(contentsOf: templateURL, encoding: .utf8) else { return }
+        for wallpaper in LibraryManager.shared.wallpapers where wallpaper.manifest.source == "es-module" {
+            let moduleURL = wallpaper.folderURL.appendingPathComponent("assets/user-module.js")
+            guard let code = try? String(contentsOf: moduleURL, encoding: .utf8) else { continue }
+            let html = template.replacingOccurrences(of: "/*__PW_MODULE_BOOTSTRAP__*/",
+                                                     with: Self.moduleBootstrap(for: code))
+            let indexURL = wallpaper.folderURL.appendingPathComponent("index.html")
+            if (try? String(contentsOf: indexURL, encoding: .utf8)) != html {
+                try? html.write(to: indexURL, atomically: true, encoding: .utf8)
+                LibraryManager.shared.regenerateThumbnail(wallpaper)
+            }
+        }
     }
 
     // MARK: - Kinds

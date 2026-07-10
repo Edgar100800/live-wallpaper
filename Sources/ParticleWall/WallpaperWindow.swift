@@ -37,6 +37,8 @@ final class WallpaperWindowController: NSObject {
     var globallyPaused = false { didSet { pushPlaybackState() } }
     private var occluded = false { didSet { if oldValue != occluded { pushPlaybackState() } } }
     var fpsCap: Int = 0 { didSet { if oldValue != fpsCap { pushPlaybackState() } } }
+    /// Per-wallpaper cap from manifest.json; effective cap is the lowest non-zero.
+    var manifestFPS: Int = 0 { didSet { if oldValue != manifestFPS { pushPlaybackState() } } }
 
     init(screen: NSScreen, displayUUID: String) {
         self.window = WallpaperWindow(screen: screen)
@@ -68,9 +70,22 @@ final class WallpaperWindowController: NSObject {
         currentIndexURL = indexURL
         currentRootURL = rootURL
         let delegate = LocalOnlyNavigationDelegate(allowedRoot: rootURL)
+        // A fresh document resets __pwPaused/__pwFPSCap to defaults; re-push once loaded.
+        delegate.onDidFinish = { [weak self] in self?.pushPlaybackState() }
         navigationDelegate = delegate
         webView.navigationDelegate = delegate
         webView.loadFileURL(indexURL, allowingReadAccessTo: rootURL)
+    }
+
+    /// Rebuild the WKWebView (new user scripts, e.g. after a render-scale change)
+    /// and reload the current wallpaper.
+    func recreateWebView() {
+        webView.removeFromSuperview()
+        webView = WebViewFactory.makeWebView(frame: window.contentView?.bounds ?? .zero)
+        window.contentView?.addSubview(webView)
+        if let indexURL = currentIndexURL, let rootURL = currentRootURL {
+            load(indexURL: indexURL, rootURL: rootURL, wallpaperID: currentWallpaperID)
+        }
     }
 
     func clear() {
@@ -86,8 +101,13 @@ final class WallpaperWindowController: NSObject {
 
     private var effectivePaused: Bool { globallyPaused || occluded }
 
+    private var effectiveFPSCap: Int {
+        let caps = [fpsCap, manifestFPS].filter { $0 > 0 }
+        return caps.min() ?? 0
+    }
+
     func pushPlaybackState() {
-        let js = "window.__pwPaused = \(effectivePaused ? "true" : "false"); window.__pwFPSCap = \(fpsCap);"
+        let js = "window.__pwPaused = \(effectivePaused ? "true" : "false"); window.__pwFPSCap = \(effectiveFPSCap);"
         webView.evaluateJavaScript(js, completionHandler: nil)
     }
 

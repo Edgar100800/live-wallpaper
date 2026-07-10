@@ -65,6 +65,7 @@ final class LibraryManager: ObservableObject {
                 WallpaperManager.shared.apply(wallpaper, to: .allScreens)
                 ThumbnailGenerator.shared.generate(for: wallpaper) { [weak self] in
                     self?.loadLibrary()
+                    WallpaperManager.shared.refreshSystemWallpaper(for: id)
                 }
             }
         } catch {
@@ -95,6 +96,16 @@ final class LibraryManager: ObservableObject {
         loadLibrary()
     }
 
+    /// Per-wallpaper FPS cap (nil = follow the global setting). Applies live
+    /// on any screen currently showing this wallpaper.
+    func setFPS(_ wallpaper: Wallpaper, fps: Int?) {
+        var manifest = wallpaper.manifest
+        manifest.fps = fps
+        try? writeManifest(manifest, to: wallpaper.folderURL)
+        loadLibrary()
+        WallpaperManager.shared.updateManifestFPS(for: wallpaper.id, fps: fps)
+    }
+
     func delete(_ wallpaper: Wallpaper) {
         WallpaperManager.shared.wallpaperRemoved(wallpaper.id)
         try? fm.removeItem(at: wallpaper.folderURL)
@@ -104,6 +115,7 @@ final class LibraryManager: ObservableObject {
     func regenerateThumbnail(_ wallpaper: Wallpaper) {
         ThumbnailGenerator.shared.generate(for: wallpaper) { [weak self] in
             self?.loadLibrary()
+            WallpaperManager.shared.refreshSystemWallpaper(for: wallpaper.id)
         }
     }
 

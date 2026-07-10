@@ -34,9 +34,28 @@ ad-hoc y lo instala en `~/Applications`.
     y se instancia la clase exportada con `document.body` como container,
   - carpeta o `.zip` con `index.html` + assets.
 - **Aplicar**: click en la tarjeta. Con varios monitores, selector "Aplicar en: …".
+- **FPS**: global en Ajustes o en el menú rápido del ícono (click derecho → Límite de FPS);
+  por wallpaper en el context menu de su tarjeta (Global/15/30/60/120, guardado en su
+  manifest). El cap efectivo es el menor de los dos no-cero.
 - **Ajustes**: iniciar al arrancar sesión, pausar con batería, Power Save (congela frame),
-  límite de FPS (30/60/120), abrir carpeta de wallpapers.
-- **CLI**: `ParticleWall --import <ruta>` importa desde terminal.
+  límite de FPS (default 30), resolución de render (default 1.5x), abrir carpeta de wallpapers.
+- **CLI**: `ParticleWall --import <ruta>` importa desde terminal; `--diag` loguea FPS reales
+  y devicePixelRatio de cada pantalla a los ~8s.
+
+### Sincronización con el wallpaper del sistema
+
+La barra de menú de macOS toma su tinte del wallpaper *del sistema*, no de la ventana de
+ParticleWall. Al aplicar un wallpaper, la app fija además el wallpaper del sistema al
+thumbnail correspondiente (por pantalla) para que no queden colores residuales del fondo
+anterior en la barra de menú, el reloj ni las transiciones de Space.
+
+### Órbita de cámara (módulos ES)
+
+Los exports de módulo ES no traen animación de cámara (formaciones estáticas quedan
+congeladas de frente). El bootstrap agrega una órbita lenta (~1 vuelta / 2.5 min) alrededor
+del origen cuando la clase exportada expone `.camera`; respeta pausa y FPS cap. Los
+wallpapers es-module existentes se regeneran automáticamente al arrancar (upgrade
+idempotente de su index.html).
 
 ## Arquitectura
 

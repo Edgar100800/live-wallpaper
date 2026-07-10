@@ -4,7 +4,8 @@ import ServiceManagement
 struct SettingsView: View {
     @AppStorage(DefaultsKey.pauseOnBattery) private var pauseOnBattery = false
     @AppStorage(DefaultsKey.powerSave) private var powerSave = false
-    @AppStorage(DefaultsKey.fpsCap) private var fpsCap = 0
+    @AppStorage(DefaultsKey.fpsCap) private var fpsCap = 30
+    @AppStorage(DefaultsKey.renderScale) private var renderScale = 1.5
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginItemError: String?
 
@@ -27,9 +28,15 @@ struct SettingsView: View {
                 Toggle("Power Save (congela un frame)", isOn: $powerSave)
                 Picker("Límite de FPS", selection: $fpsCap) {
                     Text("Sin límite").tag(0)
+                    Text("15 fps").tag(15)
                     Text("30 fps").tag(30)
                     Text("60 fps").tag(60)
                     Text("120 fps").tag(120)
+                }
+                Picker("Resolución de render", selection: $renderScale) {
+                    Text("Baja (1x)").tag(1.0)
+                    Text("Media (1.5x)").tag(1.5)
+                    Text("Nativa (2x)").tag(2.0)
                 }
             }
 

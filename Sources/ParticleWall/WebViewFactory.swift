@@ -3,9 +3,14 @@ import WebKit
 /// Blocks any navigation that is not a local file inside the allowed root.
 final class LocalOnlyNavigationDelegate: NSObject, WKNavigationDelegate {
     let allowedRoot: URL
+    var onDidFinish: (() -> Void)?
 
     init(allowedRoot: URL) {
         self.allowedRoot = allowedRoot.standardizedFileURL
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        onDidFinish?()
     }
 
     func webView(_ webView: WKWebView,
@@ -33,6 +38,21 @@ final class LocalOnlyNavigationDelegate: NSObject, WKNavigationDelegate {
 
 enum WebViewFactory {
 
+    /// Caps the devicePixelRatio wallpapers see, so renderers that call
+    /// setPixelRatio(devicePixelRatio) draw fewer pixels on retina screens.
+    static func dprClampScript(cap: Double) -> String {
+        """
+        (function () {
+          var orig = window.devicePixelRatio || 1;
+          try {
+            Object.defineProperty(window, 'devicePixelRatio', {
+              get: function () { return Math.min(orig, \(cap)); }
+            });
+          } catch (e) {}
+        })();
+        """
+    }
+
     /// Patches requestAnimationFrame so any wallpaper honors __pwPaused / __pwFPSCap
     /// without cooperating.
     static let rafPatchScript = """
@@ -49,16 +69,20 @@ enum WebViewFactory {
         window.__pwErrors.push('unhandled rejection: ' + String(e.reason));
       });
       var raf = window.requestAnimationFrame.bind(window);
-      var last = 0;
+      // Throttle per display frame, not per callback: rAF callbacks within one
+      // frame share the same timestamp, so `allowedT` lets every callback of an
+      // allowed frame through (otherwise concurrent loops starve each other).
+      var lastPass = -1e9;
+      var allowedT = -1;
       window.requestAnimationFrame = function (cb) {
         function gate(t) {
-          window.__pwFrameCount = (window.__pwFrameCount | 0) + 1;
           if (window.__pwPaused) { raf(gate); return; }
           var cap = window.__pwFPSCap;
-          if (cap > 0) {
-            var min = 1000 / cap;
-            if (t - last < min - 0.5) { raf(gate); return; }
-            last = t;
+          if (t !== allowedT) {
+            if (cap > 0 && t - lastPass < 1000 / cap - 0.5) { raf(gate); return; }
+            lastPass = t;
+            allowedT = t;
+            window.__pwFrameCount = (window.__pwFrameCount | 0) + 1;
           }
           cb(t);
         }
@@ -89,6 +113,10 @@ enum WebViewFactory {
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
         #endif
         let controller = WKUserContentController()
+        let scale = UserDefaults.standard.double(forKey: DefaultsKey.renderScale)
+        controller.addUserScript(WKUserScript(source: dprClampScript(cap: scale > 0 ? scale : 2.0),
+                                              injectionTime: .atDocumentStart,
+                                              forMainFrameOnly: false))
         controller.addUserScript(WKUserScript(source: rafPatchScript,
                                               injectionTime: .atDocumentStart,
                                               forMainFrameOnly: false))

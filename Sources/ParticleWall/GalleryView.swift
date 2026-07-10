@@ -113,7 +113,8 @@ struct GalleryView: View {
                         onRename: { renaming = wallpaper; renameText = wallpaper.name },
                         onRegenerate: { library.regenerateThumbnail(wallpaper) },
                         onReveal: { library.revealInFinder(wallpaper) },
-                        onDelete: { library.delete(wallpaper) }
+                        onDelete: { library.delete(wallpaper) },
+                        onSetFPS: { library.setFPS(wallpaper, fps: $0) }
                     )
                     .id("\(wallpaper.id)-\(activeRefresh)")
                 }
@@ -195,6 +196,7 @@ struct WallpaperCard: View {
     let onRegenerate: () -> Void
     let onReveal: () -> Void
     let onDelete: () -> Void
+    let onSetFPS: (Int?) -> Void
 
     @State private var hovering = false
     @State private var showLivePreview = false
@@ -230,12 +232,31 @@ struct WallpaperCard: View {
         }
         .contextMenu {
             Button("Aplicar", action: onApply)
+            Menu("Límite de FPS") {
+                fpsOption("Global", fps: nil)
+                fpsOption("15 fps", fps: 15)
+                fpsOption("30 fps", fps: 30)
+                fpsOption("60 fps", fps: 60)
+                fpsOption("120 fps", fps: 120)
+            }
             Divider()
             Button("Renombrar…", action: onRename)
             Button("Regenerar thumbnail", action: onRegenerate)
             Button("Mostrar en Finder", action: onReveal)
             Divider()
             Button("Eliminar", role: .destructive, action: onDelete)
+        }
+    }
+
+    private func fpsOption(_ label: String, fps: Int?) -> some View {
+        Button {
+            onSetFPS(fps)
+        } label: {
+            if wallpaper.manifest.fps == fps {
+                Label(label, systemImage: "checkmark")
+            } else {
+                Text(label)
+            }
         }
     }
 

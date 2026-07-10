@@ -42,6 +42,7 @@ enum DefaultsKey {
     static let pauseOnBattery = "pauseOnBattery"
     static let powerSave = "powerSave"
     static let fpsCap = "fpsCap"                       // 0 = unlimited
+    static let renderScale = "renderScale"             // devicePixelRatio cap: 1.0 / 1.5 / 2.0
     static let globallyPaused = "globallyPaused"
 }
 

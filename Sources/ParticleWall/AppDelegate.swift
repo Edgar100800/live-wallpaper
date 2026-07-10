@@ -7,14 +7,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        UserDefaults.standard.register(defaults: [
+            DefaultsKey.fpsCap: 30,
+            DefaultsKey.renderScale: 1.5
+        ])
         setupStatusItem()
 
         LibraryManager.shared.loadLibrary()
+        ImportPipeline.shared.upgradeModuleWallpapers()
         WallpaperManager.shared.start()
         PowerManager.shared.start()
         WallpaperManager.shared.restoreAllAssignments()
         LibraryManager.shared.installBundledDefaultIfNeeded()
         handleCLIImport()
+        handleCLIDiag()
+    }
+
+    /// `ParticleWall --diag` logs the effective FPS cap and measured FPS of every
+    /// wallpaper window a few seconds after launch.
+    private func handleCLIDiag() {
+        guard CommandLine.arguments.contains("--diag") else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
+            for (uuid, controller) in WallpaperManager.shared.controllers {
+                controller.webView.evaluateJavaScript("window.__pwFrameCount|0") { start, _ in
+                    let start = start as? Int ?? 0
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                        controller.webView.evaluateJavaScript(
+                            "'cap:' + window.__pwFPSCap + ' dpr:' + window.devicePixelRatio + ' frames:' + ((window.__pwFrameCount|0) - \(start))"
+                        ) { result, _ in
+                            NSLog("ParticleWall: diag screen \(uuid.prefix(8)): \(result ?? "nil") in 2s")
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// `ParticleWall --import <path>` imports a wallpaper from the command line.
@@ -66,6 +92,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         powerSave.state = power.powerSave ? .on : .off
         menu.addItem(powerSave)
 
+        let fpsItem = NSMenuItem(title: "Límite de FPS", action: nil, keyEquivalent: "")
+        let fpsMenu = NSMenu()
+        let currentCap = UserDefaults.standard.integer(forKey: DefaultsKey.fpsCap)
+        for (title, value) in [("Sin límite", 0), ("15 fps", 15), ("30 fps", 30),
+                               ("60 fps", 60), ("120 fps", 120)] {
+            let item = NSMenuItem(title: title, action: #selector(setGlobalFPS(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = value
+            item.state = currentCap == value ? .on : .off
+            fpsMenu.addItem(item)
+        }
+        fpsItem.submenu = fpsMenu
+        menu.addItem(fpsItem)
+
         menu.addItem(.separator())
 
         let gallery = NSMenuItem(title: "Abrir galería", action: #selector(openGallery), keyEquivalent: "g")
@@ -96,6 +136,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func togglePowerSave() {
         PowerManager.shared.powerSave.toggle()
+    }
+
+    @objc private func setGlobalFPS(_ sender: NSMenuItem) {
+        UserDefaults.standard.set(sender.tag, forKey: DefaultsKey.fpsCap)
+        // PowerManager observes UserDefaults changes and fans the new cap out.
     }
 
     @objc private func openGallery() {
