@@ -37,10 +37,26 @@ ad-hoc y lo instala en `~/Applications`.
 - **FPS**: global en Ajustes o en el menú rápido del ícono (click derecho → Límite de FPS);
   por wallpaper en el context menu de su tarjeta (Global/15/30/60/120, guardado en su
   manifest). El cap efectivo es el menor de los dos no-cero.
-- **Ajustes**: iniciar al arrancar sesión, pausar con batería, Power Save (congela frame),
-  límite de FPS (default 30), resolución de render (default 1.5x), abrir carpeta de wallpapers.
-- **CLI**: `ParticleWall --import <ruta>` importa desde terminal; `--diag` loguea FPS reales
-  y devicePixelRatio de cada pantalla a los ~8s.
+- **Ajustes**: iniciar al arrancar sesión, pausar con batería, Power Save, límite de FPS
+  (default 30), resolución de render (default 1.5x), abrir carpeta de wallpapers.
+- **CLI**: `ParticleWall --import <ruta>` importa desde terminal; `--diag` loguea FPS reales,
+  devicePixelRatio y escala de cada pantalla a los ~8s; `--powersave-test` prueba el ciclo
+  de deep sleep.
+
+### Optimizaciones de consumo
+
+- **Power Save profundo**: al activarlo, cada pantalla congela su último frame en un
+  `NSImageView` y destruye su WKWebView — los procesos WebContent mueren (CPU 0%,
+  ~300-400 MB liberados por pantalla). Al desactivar se recarga el wallpaper sin flash.
+- **Throttle con setTimeout**: los ticks saltados por el FPS cap duermen con `setTimeout`
+  en vez de re-encolar rAF — WebKit despierta ~cap veces/s (no 120/s en ProMotion) y el
+  panel puede bajar su refresh.
+- **Escala de render**: además del clamp de `devicePixelRatio`, con escala <2x los exports
+  ven `innerWidth/innerHeight` reducidos (×0.75 en Media, ×0.5 en Baja) y el canvas se
+  estira a pantalla completa por CSS — 44-58% menos píxeles también para renderers que
+  ignoran el pixel ratio.
+- **Pausa por oclusión**: si ventanas/apps fullscreen tapan el escritorio, el wallpaper se
+  pausa solo (por eso el CPU en uso normal es ~0).
 
 ### Sincronización con el wallpaper del sistema
 

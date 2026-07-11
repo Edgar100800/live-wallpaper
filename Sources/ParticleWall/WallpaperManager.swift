@@ -105,6 +105,8 @@ final class WallpaperManager {
             map[displayUUID] = wallpaper.id.uuidString
             defaults.set(map, forKey: DefaultsKey.activeWallpapers)
         }
+        // load() wakes deep-asleep controllers; re-assert Power Save if active.
+        PowerManager.shared.pushStateToAllControllers()
         NotificationCenter.default.post(name: .pwPlaybackStateChanged, object: nil)
     }
 
@@ -219,12 +221,19 @@ final class WallpaperManager {
         for uuid in controllers.keys {
             restoreAssignment(for: uuid)
         }
+        // load() wakes deep-asleep controllers; re-assert Power Save if active.
+        PowerManager.shared.pushStateToAllControllers()
     }
 
     // MARK: - Playback fan-out
 
-    func setGlobalPaused(_ paused: Bool, fpsCap: Int) {
+    func setGlobalPaused(_ paused: Bool, fpsCap: Int, deepSleep: Bool = false) {
         for controller in controllers.values {
+            if deepSleep {
+                controller.enterDeepSleep()
+            } else if controller.isDeepAsleep {
+                controller.exitDeepSleep()
+            }
             controller.globallyPaused = paused
             controller.fpsCap = fpsCap
         }

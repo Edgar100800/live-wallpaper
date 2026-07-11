@@ -21,6 +21,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         LibraryManager.shared.installBundledDefaultIfNeeded()
         handleCLIImport()
         handleCLIDiag()
+        handleCLIPowerSaveTest()
+    }
+
+    /// `ParticleWall --powersave-test`: toggles Power Save on at +8s and off at
+    /// +16s, logging deep-sleep state so the teardown/restore path is testable
+    /// without UI interaction.
+    private func handleCLIPowerSaveTest() {
+        guard CommandLine.arguments.contains("--powersave-test") else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+            PowerManager.shared.powerSave = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                let asleep = WallpaperManager.shared.controllers.values.map(\.isDeepAsleep)
+                NSLog("ParticleWall: powersave-test deep sleep states: \(asleep)")
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 16) {
+            PowerManager.shared.powerSave = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                let asleep = WallpaperManager.shared.controllers.values.map(\.isDeepAsleep)
+                NSLog("ParticleWall: powersave-test restored, deep sleep states: \(asleep)")
+            }
+        }
     }
 
     /// `ParticleWall --diag` logs the effective FPS cap and measured FPS of every
@@ -29,11 +51,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard CommandLine.arguments.contains("--diag") else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
             for (uuid, controller) in WallpaperManager.shared.controllers {
+                if controller.isDeepAsleep {
+                    NSLog("ParticleWall: diag screen \(uuid.prefix(8)): deep asleep (no webview)")
+                    continue
+                }
                 controller.webView.evaluateJavaScript("window.__pwFrameCount|0") { start, _ in
                     let start = start as? Int ?? 0
                     DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                         controller.webView.evaluateJavaScript(
-                            "'cap:' + window.__pwFPSCap + ' dpr:' + window.devicePixelRatio + ' frames:' + ((window.__pwFrameCount|0) - \(start))"
+                            "'cap:' + window.__pwFPSCap + ' dpr:' + window.devicePixelRatio" +
+                            " + ' inner:' + window.innerWidth + '/' + document.documentElement.clientWidth" +
+                            " + ' frames:' + ((window.__pwFrameCount|0) - \(start))" +
+                            " + ' paused:' + window.__pwPaused + ' errors:' + JSON.stringify(window.__pwErrors || [])"
                         ) { result, _ in
                             NSLog("ParticleWall: diag screen \(uuid.prefix(8)): \(result ?? "nil") in 2s")
                         }

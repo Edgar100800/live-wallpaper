@@ -66,6 +66,13 @@ final class WallpaperWindowController: NSObject {
     }
 
     func load(indexURL: URL, rootURL: URL, wallpaperID: UUID?) {
+        // Applying a wallpaper wakes a deep-asleep controller; PowerManager
+        // re-asserts deep sleep afterwards if Power Save is still on.
+        if isDeepAsleep {
+            isDeepAsleep = false
+            sleepImageView?.removeFromSuperview()
+            sleepImageView = nil
+        }
         currentWallpaperID = wallpaperID
         currentIndexURL = indexURL
         currentRootURL = rootURL
@@ -88,6 +95,50 @@ final class WallpaperWindowController: NSObject {
         }
     }
 
+    // MARK: - Deep sleep (Power Save)
+
+    /// Power Save: freeze the last frame in a plain NSImageView and tear the
+    /// WKWebView down entirely — its WebContent/GPU work drops to zero.
+    private var sleepImageView: NSImageView?
+    private(set) var isDeepAsleep = false
+
+    func enterDeepSleep() {
+        guard !isDeepAsleep else { return }
+        isDeepAsleep = true
+        let config = WKSnapshotConfiguration()
+        webView.takeSnapshot(with: config) { [weak self] image, _ in
+            guard let self, self.isDeepAsleep else { return }
+            let imageView = NSImageView(frame: self.window.contentView?.bounds ?? .zero)
+            imageView.autoresizingMask = [.width, .height]
+            imageView.imageScaling = .scaleAxesIndependently
+            imageView.image = image   // nil leaves the black window background
+            self.window.contentView?.addSubview(imageView)
+            self.sleepImageView = imageView
+            self.webView.removeFromSuperview()
+            self.webView = WebViewFactory.makeWebView(frame: .zero) // detached placeholder
+        }
+    }
+
+    func exitDeepSleep() {
+        guard isDeepAsleep else { return }
+        isDeepAsleep = false
+        recreateWebView()
+        // Keep the frozen frame visible until the reloaded wallpaper paints.
+        if let delegate = navigationDelegate {
+            let previousFinish = delegate.onDidFinish
+            delegate.onDidFinish = { [weak self] in
+                previousFinish?()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    self?.sleepImageView?.removeFromSuperview()
+                    self?.sleepImageView = nil
+                }
+            }
+        } else {
+            sleepImageView?.removeFromSuperview()
+            sleepImageView = nil
+        }
+    }
+
     func clear() {
         currentWallpaperID = nil
         currentIndexURL = nil
@@ -107,6 +158,7 @@ final class WallpaperWindowController: NSObject {
     }
 
     func pushPlaybackState() {
+        guard !isDeepAsleep else { return } // no webview to talk to; would respawn WebContent
         let js = "window.__pwPaused = \(effectivePaused ? "true" : "false"); window.__pwFPSCap = \(effectiveFPSCap);"
         webView.evaluateJavaScript(js, completionHandler: nil)
     }
@@ -114,6 +166,7 @@ final class WallpaperWindowController: NSObject {
     /// Kick after session unlock: some WebKit renders stay frozen. Re-push state;
     /// if the JS context is gone, reload as fallback.
     func kickAfterUnlock() {
+        guard !isDeepAsleep else { return }
         webView.evaluateJavaScript("window.__pwInstalled === true") { [weak self] result, error in
             guard let self else { return }
             if error != nil || (result as? Bool) != true {

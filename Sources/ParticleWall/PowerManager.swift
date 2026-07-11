@@ -120,20 +120,27 @@ final class PowerManager {
 
     private var lastPushedPaused: Bool?
     private var lastPushedCap: Int?
+    private var lastPushedDeepSleep: Bool?
 
     private func apply() {
         let paused = shouldPause
         let cap = fpsCap
-        guard paused != lastPushedPaused || cap != lastPushedCap else { return }
+        // Deep sleep (webview torn down) only for the explicit Power Save toggle;
+        // lock/sleep/battery pauses must resume instantly.
+        let deepSleep = powerSave
+        guard paused != lastPushedPaused || cap != lastPushedCap
+                || deepSleep != lastPushedDeepSleep else { return }
         lastPushedPaused = paused
         lastPushedCap = cap
-        WallpaperManager.shared.setGlobalPaused(paused, fpsCap: cap)
+        lastPushedDeepSleep = deepSleep
+        WallpaperManager.shared.setGlobalPaused(paused, fpsCap: cap, deepSleep: deepSleep)
         NotificationCenter.default.post(name: .pwPlaybackStateChanged, object: nil)
     }
 
     func pushStateToAllControllers() {
         lastPushedPaused = nil
         lastPushedCap = nil
+        lastPushedDeepSleep = nil
         apply()
     }
 }

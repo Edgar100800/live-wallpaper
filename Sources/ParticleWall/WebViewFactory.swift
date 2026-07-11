@@ -40,8 +40,13 @@ enum WebViewFactory {
 
     /// Caps the devicePixelRatio wallpapers see, so renderers that call
     /// setPixelRatio(devicePixelRatio) draw fewer pixels on retina screens.
+    /// Additionally, below native scale the reported innerWidth/innerHeight
+    /// shrink by renderScale/2 — exports that size their canvas from those
+    /// (ignoring devicePixelRatio) also render fewer pixels; hardenScript's CSS
+    /// stretches the canvas back to full screen.
     static func dprClampScript(cap: Double) -> String {
-        """
+        let sizeFactor = min(1.0, cap / 2.0)
+        return """
         (function () {
           var orig = window.devicePixelRatio || 1;
           try {
@@ -49,6 +54,17 @@ enum WebViewFactory {
               get: function () { return Math.min(orig, \(cap)); }
             });
           } catch (e) {}
+          var s = \(sizeFactor);
+          if (s < 1) {
+            try {
+              Object.defineProperty(window, 'innerWidth', {
+                get: function () { return Math.round(document.documentElement.clientWidth * s); }
+              });
+              Object.defineProperty(window, 'innerHeight', {
+                get: function () { return Math.round(document.documentElement.clientHeight * s); }
+              });
+            } catch (e) {}
+          }
         })();
         """
     }
@@ -72,14 +88,24 @@ enum WebViewFactory {
       // Throttle per display frame, not per callback: rAF callbacks within one
       // frame share the same timestamp, so `allowedT` lets every callback of an
       // allowed frame through (otherwise concurrent loops starve each other).
+      // Skipped ticks sleep via setTimeout instead of re-queueing rAF, so WebKit
+      // wakes ~cap times/s (not 120/s) and ProMotion can drop the panel refresh.
       var lastPass = -1e9;
       var allowedT = -1;
       window.requestAnimationFrame = function (cb) {
         function gate(t) {
-          if (window.__pwPaused) { raf(gate); return; }
+          if (window.__pwPaused) {
+            setTimeout(function () { raf(gate); }, 250);
+            return;
+          }
           var cap = window.__pwFPSCap;
           if (t !== allowedT) {
-            if (cap > 0 && t - lastPass < 1000 / cap - 0.5) { raf(gate); return; }
+            var min = cap > 0 ? 1000 / cap : 0;
+            if (cap > 0 && t - lastPass < min - 0.5) {
+              var wait = Math.max(0, min - (t - lastPass) - 2);
+              setTimeout(function () { raf(gate); }, wait);
+              return;
+            }
             lastPass = t;
             allowedT = t;
             window.__pwFrameCount = (window.__pwFrameCount | 0) + 1;
@@ -98,7 +124,10 @@ enum WebViewFactory {
       document.addEventListener('dragstart', function (e) { e.preventDefault(); }, true);
       var s = document.createElement('style');
       s.textContent = 'html,body{overflow:hidden !important;margin:0;padding:0;}' +
-                      '*{user-select:none !important;-webkit-user-select:none !important;}';
+                      '*{user-select:none !important;-webkit-user-select:none !important;}' +
+                      // Canvas may render at reduced resolution (innerWidth patch);
+                      // stretch it to full screen regardless of its inline size.
+                      'body > canvas{width:100vw !important;height:100vh !important;}';
       (document.head || document.documentElement).appendChild(s);
     })();
     """
