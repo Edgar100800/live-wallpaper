@@ -1,6 +1,24 @@
 import AppKit
 import IOKit.ps
 
+/// Pure, testable result of combining user and system power inputs.
+struct PlaybackPolicy: Equatable {
+    let paused: Bool
+    let deepSleep: Bool
+    let preservingFrame: Bool
+    let persistSnapshot: Bool
+
+    static func resolve(userPaused: Bool,
+                        powerSave: Bool,
+                        systemUnavailable: Bool,
+                        batteryPause: Bool) -> PlaybackPolicy {
+        PlaybackPolicy(paused: userPaused || powerSave || systemUnavailable || batteryPause,
+                       deepSleep: powerSave || systemUnavailable || batteryPause,
+                       preservingFrame: true,
+                       persistSnapshot: systemUnavailable)
+    }
+}
+
 /// Central pause policy. Combines session lock, screen sleep, battery state,
 /// user Power Save / Play-Pause toggles and pushes the result to every
 /// wallpaper window. Per-window occlusion is handled by each controller.
@@ -121,19 +139,32 @@ final class PowerManager {
     private var lastPushedPaused: Bool?
     private var lastPushedCap: Int?
     private var lastPushedDeepSleep: Bool?
+    private var lastPushedPreservingFrame: Bool?
+    private var lastPushedPersistSnapshot: Bool?
 
     private func apply() {
-        let paused = shouldPause
         let cap = fpsCap
-        // Deep sleep (webview torn down) only for the explicit Power Save toggle;
-        // lock/sleep/battery pauses must resume instantly.
-        let deepSleep = powerSave
-        guard paused != lastPushedPaused || cap != lastPushedCap
-                || deepSleep != lastPushedDeepSleep else { return }
-        lastPushedPaused = paused
+        let systemUnavailable = screenLocked || screensAsleep || sessionInactive
+        let batteryPause = defaults.bool(forKey: DefaultsKey.pauseOnBattery)
+            && (onBattery || ProcessInfo.processInfo.isLowPowerModeEnabled)
+        let policy = PlaybackPolicy.resolve(userPaused: userPaused,
+                                            powerSave: powerSave,
+                                            systemUnavailable: systemUnavailable,
+                                            batteryPause: batteryPause)
+        guard policy.paused != lastPushedPaused || cap != lastPushedCap
+                || policy.deepSleep != lastPushedDeepSleep
+                || policy.preservingFrame != lastPushedPreservingFrame
+                || policy.persistSnapshot != lastPushedPersistSnapshot else { return }
+        lastPushedPaused = policy.paused
         lastPushedCap = cap
-        lastPushedDeepSleep = deepSleep
-        WallpaperManager.shared.setGlobalPaused(paused, fpsCap: cap, deepSleep: deepSleep)
+        lastPushedDeepSleep = policy.deepSleep
+        lastPushedPreservingFrame = policy.preservingFrame
+        lastPushedPersistSnapshot = policy.persistSnapshot
+        WallpaperManager.shared.setGlobalPaused(policy.paused,
+                                                 fpsCap: cap,
+                                                 deepSleep: policy.deepSleep,
+                                                 preservingFrame: policy.preservingFrame,
+                                                 persistSnapshots: policy.persistSnapshot)
         NotificationCenter.default.post(name: .pwPlaybackStateChanged, object: nil)
     }
 
@@ -141,6 +172,8 @@ final class PowerManager {
         lastPushedPaused = nil
         lastPushedCap = nil
         lastPushedDeepSleep = nil
+        lastPushedPreservingFrame = nil
+        lastPushedPersistSnapshot = nil
         apply()
     }
 }

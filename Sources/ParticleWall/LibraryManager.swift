@@ -11,6 +11,39 @@ final class LibraryManager: ObservableObject {
     let wallpapersURL: URL
     private let fm = FileManager.default
 
+    private struct BundledWallpaperSpec {
+        let name: String
+        let resourceName: String
+        let renderer: WallpaperRendererKind
+    }
+
+    private static let bundledWallpaperSpecs: [BundledWallpaperSpec] = [
+        .init(name: "Ondas Paramétricas",
+              resourceName: "DefaultWallpaper",
+              renderer: .metalParticles),
+        .init(name: "Vórtice Gemelo",
+              resourceName: "TwinVortexWallpaper",
+              renderer: .metalTwinVortex),
+        .init(name: "Flor Orbital",
+              resourceName: "OrbitalBloomWallpaper",
+              renderer: .metalOrbitalBloom),
+        .init(name: "Roseta Hexagonal",
+              resourceName: "HexagonalRosetteWallpaper",
+              renderer: .metalHexagonalRosette),
+        .init(name: "Lluvia de Ruido",
+              resourceName: "NoiseRainWallpaper",
+              renderer: .metalNoiseRain),
+        .init(name: "Espiral Prima",
+              resourceName: "PrimeSpiralWallpaper",
+              renderer: .metalPrimeSpiral),
+        .init(name: "Órbita Toroidal",
+              resourceName: "TorusOrbitWallpaper",
+              renderer: .metalTorusOrbit),
+        .init(name: "Anillos Cromáticos",
+              resourceName: "ChromaticRingsWallpaper",
+              renderer: .metalChromaticRings)
+    ]
+
     private init() {
         let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         rootURL = appSupport.appendingPathComponent("ParticleWall", isDirectory: true)
@@ -42,35 +75,111 @@ final class LibraryManager: ObservableObject {
         wallpapers = found.sorted { $0.manifest.createdAt > $1.manifest.createdAt }
     }
 
-    /// First run: install the bundled demo wallpaper and apply it everywhere.
+    /// Install every missing built-in wallpaper. Identity is based on renderer,
+    /// so renaming one does not create duplicates and deleting old installations
+    /// is repaired on the next launch.
     func installBundledDefaultIfNeeded() {
-        guard wallpapers.isEmpty else { return }
-        guard let defaultFolder = Bundle.module.url(forResource: "DefaultWallpaper", withExtension: nil),
-              let threeJS = Bundle.module.url(forResource: "three.min", withExtension: "js") else {
-            NSLog("ParticleWall: bundled default wallpaper missing")
-            return
+        let missing = Self.bundledWallpaperSpecs.filter { spec in
+            !wallpapers.contains {
+                $0.isBundled && $0.manifest.effectiveRenderer == spec.renderer
+            }
         }
-        do {
+        guard !missing.isEmpty else { return }
+        let libraryWasEmpty = wallpapers.isEmpty
+        var installedIDs: [UUID] = []
+
+        for spec in missing {
+            guard let resourceFolder = Bundle.module.url(forResource: spec.resourceName,
+                                                         withExtension: nil) else {
+                NSLog("ParticleWall: bundled wallpaper resource missing: \(spec.resourceName)")
+                continue
+            }
             let id = UUID()
             let folder = wallpapersURL.appendingPathComponent(id.uuidString, isDirectory: true)
-            let assets = folder.appendingPathComponent("assets", isDirectory: true)
-            try fm.createDirectory(at: assets, withIntermediateDirectories: true)
-            try fm.copyItem(at: defaultFolder.appendingPathComponent("index.html"),
-                            to: folder.appendingPathComponent("index.html"))
-            try fm.copyItem(at: threeJS, to: assets.appendingPathComponent("three.min.js"))
-            let manifest = WallpaperManifest(name: "Demo Particles", source: "bundled")
-            try writeManifest(manifest, to: folder)
-            loadLibrary()
-            if let wallpaper = wallpaper(id: id) {
-                WallpaperManager.shared.apply(wallpaper, to: .allScreens)
-                ThumbnailGenerator.shared.generate(for: wallpaper) { [weak self] in
-                    self?.loadLibrary()
-                    WallpaperManager.shared.refreshSystemWallpaper(for: id)
+            do {
+                try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+                try fm.copyItem(at: resourceFolder.appendingPathComponent("index.html"),
+                                to: folder.appendingPathComponent("index.html"))
+                let manifest = WallpaperManifest(name: spec.name,
+                                                 source: "bundled",
+                                                 renderer: spec.renderer)
+                try writeManifest(manifest, to: folder)
+                installedIDs.append(id)
+            } catch {
+                try? fm.removeItem(at: folder)
+                NSLog("ParticleWall: failed to install \(spec.name): \(error)")
+            }
+        }
+
+        guard !installedIDs.isEmpty else { return }
+        loadLibrary()
+        let hasActiveWallpaper = WallpaperManager.shared.controllers.values.contains {
+            $0.currentWallpaperID != nil
+        }
+        if (libraryWasEmpty || !hasActiveWallpaper),
+           let defaultWallpaper = wallpapers.first(where: {
+               $0.isBundled && $0.manifest.effectiveRenderer == .metalParticles
+           }) {
+            WallpaperManager.shared.apply(defaultWallpaper, to: .allScreens)
+        }
+
+        for id in installedIDs {
+            guard let wallpaper = wallpaper(id: id) else { continue }
+            ThumbnailGenerator.shared.generate(for: wallpaper) { [weak self] in
+                self?.loadLibrary()
+                WallpaperManager.shared.refreshSystemWallpaper(for: id)
+            }
+        }
+    }
+
+    /// Keep bundled fallbacks and renderer identifiers current.
+    /// User-imported wallpapers are never rewritten.
+    func upgradeBundledWallpapers() {
+        var manifestChanged = false
+        for wallpaper in wallpapers where wallpaper.isBundled {
+            let renderer = wallpaper.manifest.effectiveRenderer
+            guard let spec = Self.bundledWallpaperSpecs.first(where: {
+                $0.renderer == renderer
+            }), let bundledFolder = Bundle.module.url(forResource: spec.resourceName,
+                                                      withExtension: nil),
+                let bundledHTML = try? String(
+                    contentsOf: bundledFolder.appendingPathComponent("index.html"),
+                    encoding: .utf8
+                ) else { continue }
+
+            if wallpaper.manifest.renderer == nil ||
+                (renderer == .metalParticles && wallpaper.manifest.name == "Demo Particles") {
+                var manifest = wallpaper.manifest
+                if manifest.name == "Demo Particles" {
+                    manifest.name = spec.name
+                }
+                manifest.renderer = renderer
+                try? writeManifest(manifest, to: wallpaper.folderURL)
+                manifestChanged = true
+            }
+
+            if (try? String(contentsOf: wallpaper.indexURL, encoding: .utf8)) != bundledHTML {
+                do {
+                    try bundledHTML.write(to: wallpaper.indexURL, atomically: true, encoding: .utf8)
+                    regenerateThumbnail(wallpaper)
+                } catch {
+                    NSLog("ParticleWall: could not upgrade bundled wallpaper: \(error)")
                 }
             }
-        } catch {
-            NSLog("ParticleWall: failed to install default wallpaper: \(error)")
         }
+        if manifestChanged { loadLibrary() }
+    }
+
+    /// Applies the built-in native animation without changing imported content.
+    @discardableResult
+    func applyBundledDefault() -> Bool {
+        guard let wallpaper = wallpapers.first(where: {
+            $0.isBundled && $0.manifest.effectiveRenderer == .metalParticles
+        }) else {
+            return false
+        }
+        WallpaperManager.shared.apply(wallpaper, to: .allScreens)
+        return true
     }
 
     // MARK: - Mutations
@@ -107,6 +216,10 @@ final class LibraryManager: ObservableObject {
     }
 
     func delete(_ wallpaper: Wallpaper) {
+        guard !wallpaper.isBundled else {
+            NSLog("ParticleWall: ignored deletion request for bundled wallpaper \(wallpaper.id)")
+            return
+        }
         WallpaperManager.shared.wallpaperRemoved(wallpaper.id)
         try? fm.removeItem(at: wallpaper.folderURL)
         loadLibrary()

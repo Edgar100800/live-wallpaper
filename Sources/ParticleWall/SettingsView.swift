@@ -6,6 +6,7 @@ struct SettingsView: View {
     @AppStorage(DefaultsKey.powerSave) private var powerSave = false
     @AppStorage(DefaultsKey.fpsCap) private var fpsCap = 30
     @AppStorage(DefaultsKey.renderScale) private var renderScale = 1.5
+    @AppStorage(DefaultsKey.adaptiveQuality) private var adaptiveQuality = true
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginItemError: String?
 
@@ -26,6 +27,10 @@ struct SettingsView: View {
             Section("Energía") {
                 Toggle("Pausar con batería", isOn: $pauseOnBattery)
                 Toggle("Power Save (congela un frame)", isOn: $powerSave)
+                Toggle("Ajustar calidad automáticamente", isOn: $adaptiveQuality)
+                Text("Reduce temporalmente los FPS cuando un modelo supera el presupuesto de cada frame.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Picker("Límite de FPS", selection: $fpsCap) {
                     Text("Sin límite").tag(0)
                     Text("15 fps").tag(15)

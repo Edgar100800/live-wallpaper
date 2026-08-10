@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<script>
+  // Canvas fallback and thumbnail source. The live wallpaper keeps particle
+  // state and trail history in Metal buffers.
+  const canvas = document.getElementById('canvas');
+  const context = canvas.getContext('2d', { alpha: false });
+  const particles = new Array(720 * 9);
+  let frame = 0;
+  let tick = 0;
+
+  function fract(value) {
+    return value - Math.floor(value);
+  }
+
+  function hash(x, y, z) {
+    let px = fract(x * 0.1031);
+    let py = fract(y * 0.1031);
+    let pz = fract(z * 0.1031);
+    const mixed = px * (py + 33.33) + py * (pz + 33.33) + pz * (px + 33.33);
+    px += mixed;
+    py += mixed;
+    pz += mixed;
+    return fract((px + py) * pz);
+  }
+
+  function noise3(x, y, z) {
+    const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+    let fx = x - ix, fy = y - iy, fz = z - iz;
+    fx = fx * fx * (3 - 2 * fx);
+    fy = fy * fy * (3 - 2 * fy);
+    fz = fz * fz * (3 - 2 * fz);
+    const x00 = hash(ix, iy, iz) * (1 - fx) + hash(ix + 1, iy, iz) * fx;
+    const x10 = hash(ix, iy + 1, iz) * (1 - fx) + hash(ix + 1, iy + 1, iz) * fx;
+    const x01 = hash(ix, iy, iz + 1) * (1 - fx) + hash(ix + 1, iy, iz + 1) * fx;
+    const x11 = hash(ix, iy + 1, iz + 1) * (1 - fx) + hash(ix + 1, iy + 1, iz + 1) * fx;
+    return (x00 * (1 - fy) + x10 * fy) * (1 - fz)
+      + (x01 * (1 - fy) + x11 * fy) * fz;
+  }
+
+  function resize() {
+    const ratio = Math.min(window.devicePixelRatio || 1, 1.5);
+    canvas.width = Math.max(1, Math.round(innerWidth * ratio));
+    canvas.height = Math.max(1, Math.round(innerHeight * ratio));
+    context.fillStyle = '#000';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  function draw() {
+    requestAnimationFrame(draw);
+    if (window.__pwPaused) return;
+
+    context.filter = 'none';
+    context.fillStyle = 'rgba(0,0,0,0.035)';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+
+    for (let count = 0; count < 9; count++) {
+      const index = tick++ % particles.length;
+      particles[index] = { x: (tick * 99) % 720, y: 0, gravity: 0, size: 3 };
+    }
+
+    const fit = Math.min(canvas.width, canvas.height) / 720;
+    const offsetX = (canvas.width - 720 * fit) / 2;
+    const offsetY = (canvas.height - 720 * fit) / 2;
+    context.fillStyle = '#fff';
+    context.filter = `blur(${Math.max(0.35, fit * 0.45)}px)`;
+
+    for (const particle of particles) {
+      if (!particle) continue;
+      particle.size *= 0.997;
+      const value = noise3(particle.x / 720, particle.y / 9, tick / 720);
+      if (value > 0.4) {
+        particle.gravity += 0.5;
+        particle.y += particle.gravity;
+      } else {
+        particle.x += value % 0.1 > 0.05 ? 1 : -1;
+        particle.gravity = 0;
+        particle.y += 0.5;
+      }
+      const size = Math.max(0.5, particle.size * fit);
+      context.fillRect(offsetX + particle.x * fit - size / 2,
+                       offsetY + particle.y * fit - size / 2, size, size);
+    }
+    frame++;
+  }
+
+  addEventListener('resize', resize);
+  resize();
+  requestAnimationFrame(draw);
+</script>
+</body>
+</html>

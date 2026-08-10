@@ -1,5 +1,13 @@
 # Plan: App de fondos animados (partículas Three.js) para macOS
 
+> **Documento histórico.** Este fue el plan inicial y ya no representa toda la
+> implementación. ParticleWall evolucionó de una arquitectura exclusivamente
+> WebKit a una arquitectura híbrida con ocho fondos Metal nativos, WebKit como
+> compatibilidad, personalización persistente, perfiles de color y grafo por
+> proximidad. Consulta [`PROJECT_PROGRESS.md`](PROJECT_PROGRESS.md) para el
+> estado vigente y [`PERFORMANCE_ROADMAP.md`](PERFORMANCE_ROADMAP.md) para los
+> próximos pasos.
+
 ## Contexto
 
 El usuario tiene animaciones de partículas exportables como Vanilla JS / Three.js (código que renderiza un swarm de partículas en un canvas). El objetivo es una app nativa de macOS que renderice estos archivos HTML como fondo de pantalla animado (detrás de los íconos del escritorio), con una galería para importar y cambiar de fondo.

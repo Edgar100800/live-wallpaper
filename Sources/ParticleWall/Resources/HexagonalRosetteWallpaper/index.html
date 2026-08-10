@@ -10,10 +10,14 @@
 <body>
 <canvas id="canvas"></canvas>
 <script>
-  // Web fallback and thumbnail source for the native Metal default. This is the
-  // expanded form of the original compact p5.js expression.
+  // Canvas fallback and thumbnail source. Metal generates the six rotations
+  // directly instead of copying the previous framebuffer like the p5 original.
   const canvas = document.getElementById('canvas');
   const context = canvas.getContext('2d', { alpha: false });
+  const rotations = Array.from({ length: 6 }, (_, copy) => {
+    const angle = copy * Math.PI / 3;
+    return [Math.cos(angle), Math.sin(angle)];
+  });
   let time = 0;
 
   function resize() {
@@ -25,28 +29,27 @@
   function draw() {
     requestAnimationFrame(draw);
     if (window.__pwPaused) return;
-    time += Math.PI / 80;
-
+    time += Math.PI / 240;
     context.fillStyle = '#030609';
     context.fillRect(0, 0, canvas.width, canvas.height);
-    context.fillStyle = 'rgba(232,255,255,0.57)';
-
+    context.fillStyle = 'rgba(232,255,255,0.42)';
     const fit = Math.min(canvas.width, canvas.height) / 400;
     const offsetX = (canvas.width - 400 * fit) / 2;
     const offsetY = (canvas.height - 400 * fit) / 2;
-    const pointSize = Math.max(1.25, fit * 1.1);
+    const size = Math.max(1.1, fit);
 
-    for (let i = 9999; i >= 0; i--) {
-      const y = i / 235;
-      const k = (4 + Math.cos(i / 9 - time * 2)) * Math.cos(i / 35);
-      const e = y / 7 - 13;
-      const d = Math.hypot(k, e) + Math.sin(e / 9 + time / 2) - 4;
-      const q = 2 * Math.sin(k * 3)
-        - y / 35 * k * (9 + k * Math.sin(Math.cos(e) * 9 - d * 2 + time));
-      const c = d - time;
-      const x = q + 40 * Math.cos(c) + 200;
-      const py = q * Math.sin(c) + d * 35;
-      context.fillRect(offsetX + x * fit, offsetY + py * fit, pointSize, pointSize);
+    for (let i = 19999; i > 6; i--) {
+      const k = i % 25 - 12;
+      const e = i / 800;
+      const d = 7 * Math.cos(Math.hypot(k, e) / 3 + time / 2);
+      const x = k * 4 + d * k * Math.sin(d + e / 9 + time);
+      const y = e * 2 - d * 9 - d * 9 * Math.cos(d + time);
+      for (const [cosine, sine] of rotations) {
+        const rx = x * cosine - y * sine;
+        const ry = x * sine + y * cosine;
+        context.fillRect(offsetX + (rx + 200) * fit,
+                         offsetY + (ry + 200) * fit, size, size);
+      }
     }
   }
 

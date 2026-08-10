@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<script>
+  // Canvas fallback and thumbnail source for the native Metal point-cloud scene.
+  const canvas = document.getElementById('canvas');
+  const context = canvas.getContext('2d', { alpha: false });
+  let phase = 0;
+
+  function resize() {
+    const ratio = Math.min(window.devicePixelRatio || 1, 1.5);
+    canvas.width = Math.max(1, Math.round(innerWidth * ratio));
+    canvas.height = Math.max(1, Math.round(innerHeight * ratio));
+  }
+
+  function project(world, scaleX, scaleY) {
+    const eyeZ = 346.41016;
+    const perspective = eyeZ / Math.max(72, eyeZ - world[2]);
+    return [
+      (200 + world[0] * perspective) * scaleX,
+      (200 + world[1] * perspective) * scaleY,
+      perspective
+    ];
+  }
+
+  function draw() {
+    requestAnimationFrame(draw);
+    if (window.__pwPaused) return;
+    phase += 0.01;
+    context.fillStyle = '#000';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = 'rgba(255,255,255,0.72)';
+    const scaleX = canvas.width / 400;
+    const scaleY = canvas.height / 400;
+    const cosTilt = Math.cos(0.8);
+    const sinTilt = Math.sin(0.8);
+
+    for (let ring = 0; ring < 64; ring++) {
+      const ringAngle = ring * Math.PI / 32 + phase;
+      const cosRing = Math.cos(ringAngle);
+      const sinRing = Math.sin(ringAngle);
+      for (let majorID = 0; majorID < 96; majorID++) {
+        const major = majorID * Math.PI * 2 / 96;
+        for (let tubeID = 0; tubeID < 6; tubeID++) {
+          const tube = tubeID * Math.PI * 2 / 6;
+          const radius = 80 + 4 * Math.cos(tube);
+          const localX = radius * Math.cos(major) + 120;
+          const sourceY = radius * Math.sin(major);
+          const sourceZ = 4 * Math.sin(tube);
+          const localY = sourceY * cosTilt - sourceZ * sinTilt;
+          const localZ = sourceY * sinTilt + sourceZ * cosTilt;
+          const world = [
+            localX * cosRing + localZ * sinRing + 60 * Math.sin(phase),
+            localY - 20,
+            -localX * sinRing + localZ * cosRing + 170
+          ];
+          const [x, y, perspective] = project(world, scaleX, scaleY);
+          const size = Math.max(0.55, Math.min(scaleX, scaleY) * 0.38 * perspective);
+          context.fillRect(x - size / 2, y - size / 2, size, size);
+        }
+      }
+    }
+
+    context.fillStyle = '#fff';
+    const orb = [
+      60 * Math.sin(phase) + 99 * Math.sin(-phase),
+      -20,
+      170 + 99 * Math.cos(phase)
+    ];
+    const [orbX, orbY, orbPerspective] = project(orb, scaleX, scaleY);
+    const orbSize = Math.max(2, 5 * Math.min(scaleX, scaleY) * orbPerspective);
+    context.beginPath();
+    context.arc(orbX, orbY, orbSize, 0, Math.PI * 2);
+    context.fill();
+  }
+
+  addEventListener('resize', resize);
+  resize();
+  requestAnimationFrame(draw);
+</script>
+</body>
+</html>

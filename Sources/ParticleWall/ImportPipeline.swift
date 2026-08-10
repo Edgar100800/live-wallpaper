@@ -90,6 +90,9 @@ final class ImportPipeline {
         try fm.createDirectory(at: assets, withIntermediateDirectories: true)
         try repaired.write(to: assets.appendingPathComponent("user-module.js"),
                            atomically: true, encoding: .utf8)
+        let adapted = Self.adaptGeneratedModule(repaired)
+        try adapted.write(to: assets.appendingPathComponent("pw-user-module.js"),
+                          atomically: true, encoding: .utf8)
         try fm.copyItem(at: esmFolder, to: assets.appendingPathComponent("three-esm"))
 
         let template = try String(contentsOf: templateURL, encoding: .utf8)
@@ -125,8 +128,11 @@ final class ImportPipeline {
 
         if code.range(of: defaulted, options: .regularExpression) != nil {
             return """
-            import UserWallpaper from './assets/user-module.js';
+            import UserWallpaper from './assets/pw-user-module.js';
+            const __pwGeneratedControls = \(generatedControlJSON(in: code));
             const __pwInstance = new UserWallpaper(document.body);
+            window.__pwInstance = __pwInstance;
+            \(controlBridgeScript)
             \(cameraOrbitScript)
             """
         }
@@ -135,13 +141,274 @@ final class ImportPipeline {
                                                                      with: "",
                                                                      options: .regularExpression)
             return """
-            import { \(className) } from './assets/user-module.js';
+            import { \(className) } from './assets/pw-user-module.js';
+            const __pwGeneratedControls = \(generatedControlJSON(in: code));
             const __pwInstance = new \(className)(document.body);
+            window.__pwInstance = __pwInstance;
+            \(controlBridgeScript)
             \(cameraOrbitScript)
             """
         }
-        return "import './assets/user-module.js';"
+        return "import './assets/pw-user-module.js';"
     }
+
+    /// Builds a derived module for generated particle exports. The original
+    /// user-module.js remains untouched and can always be recovered or edited.
+    ///
+    /// Generated exporters recreate `PARAMS` on every frame and call
+    /// `addControl(...)` inside the particle loop. We attach the mutable values
+    /// to the instance and hoist simple invariant declarations before that loop.
+    static func adaptGeneratedModule(_ code: String) -> String {
+        let marker = "/* particlewall-generated-adapter-v1 */"
+        guard !code.contains(marker),
+              code.contains("const PARAMS"),
+              code.contains("addControl(") else { return code }
+
+        var adapted = code
+        let paramsPattern = #"const\s+PARAMS\s*=\s*(\{[^\n;]*\})\s*;"#
+        if let regex = try? NSRegularExpression(pattern: paramsPattern),
+           let match = regex.firstMatch(in: adapted,
+                                        range: NSRange(adapted.startIndex..., in: adapted)),
+           let fullRange = Range(match.range(at: 0), in: adapted),
+           let objectRange = Range(match.range(at: 1), in: adapted) {
+            let object = String(adapted[objectRange])
+            adapted.replaceSubrange(
+                fullRange,
+                with: """
+                \(marker)
+                        this.__pwParams = Object.assign(\(object), this.__pwParams || {});
+                        const PARAMS = this.__pwParams;
+                """
+            )
+        } else {
+            return code
+        }
+
+        // The exporter shape uses invariant `const x = addControl(...)` lines
+        // inside its main `for (i...)` particle loop. Move only those simple
+        // declarations; nested or stateful expressions remain untouched.
+        var lines = adapted.components(separatedBy: "\n")
+        guard let paramsIndex = lines.firstIndex(where: { $0.contains(marker) }),
+              let loopIndex = lines.indices.first(where: { index in
+            index > paramsIndex &&
+            lines[index].range(of: #"\bfor\s*\(\s*(?:let|var)\s+i\s*="#,
+                              options: .regularExpression) != nil
+        }) else {
+            return adapted
+        }
+
+        let declarationPattern =
+            #"^\s*(?:const|let)\s+\w+\s*=\s*(?:Math\.(?:floor|round|ceil)\s*\(\s*)?addControl\s*\(\s*["'][^"']+["'][^;]*\)\s*\)?\s*;\s*$"#
+        var hoisted: [String] = []
+        var indexes: [Int] = []
+        for index in lines.indices where index > loopIndex {
+            if lines[index].range(of: declarationPattern, options: .regularExpression) != nil {
+                hoisted.append(lines[index])
+                indexes.append(index)
+            }
+        }
+        for index in indexes.reversed() {
+            lines.remove(at: index)
+        }
+        if !hoisted.isEmpty {
+            let indent = String(lines[loopIndex].prefix { $0 == " " || $0 == "\t" })
+            let normalized = hoisted.map {
+                indent + $0.trimmingCharacters(in: .whitespaces)
+            }
+            lines.insert(contentsOf: normalized + [""], at: loopIndex)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Converts the generated `addControl(id, label, min, max, default)` calls
+    /// into the same descriptor contract consumed by the native SwiftUI editor.
+    static func generatedControlDescriptors(in code: String) -> [[String: Any]] {
+        let pattern =
+            #"addControl\s*\(\s*["']([^"']+)["']\s*,\s*["']([^"']+)["']\s*,\s*(-?(?:\d+(?:\.\d+)?|\.\d+))\s*,\s*(-?(?:\d+(?:\.\d+)?|\.\d+))\s*,\s*(-?(?:\d+(?:\.\d+)?|\.\d+))\s*\)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(code.startIndex..., in: code)
+        var seen = Set<String>()
+        return regex.matches(in: code, range: range).compactMap { match in
+            guard let idRange = Range(match.range(at: 1), in: code),
+                  let labelRange = Range(match.range(at: 2), in: code),
+                  let minRange = Range(match.range(at: 3), in: code),
+                  let maxRange = Range(match.range(at: 4), in: code),
+                  let defaultRange = Range(match.range(at: 5), in: code) else { return nil }
+            let id = String(code[idRange])
+            guard seen.insert(id).inserted,
+                  let min = Double(code[minRange]),
+                  let max = Double(code[maxRange]),
+                  let defaultValue = Double(code[defaultRange]),
+                  max > min else { return nil }
+            let span = max - min
+            let step: Double
+            if defaultValue.rounded() == defaultValue && min.rounded() == min && max.rounded() == max {
+                step = 1
+            } else {
+                step = span <= 2 ? 0.01 : (span <= 20 ? 0.05 : 0.1)
+            }
+            return [
+                "id": id,
+                "label": String(code[labelRange]),
+                "category": "Parámetros del modelo",
+                "min": min,
+                "max": max,
+                "step": step,
+                "defaultValue": defaultValue
+            ]
+        }
+    }
+
+    private static func generatedControlJSON(in code: String) -> String {
+        let reserved = Set([
+            "positionX", "positionY", "positionZ", "rotationX", "rotationY",
+            "rotationZ", "scale", "speed", "cameraFOV", "bloomStrength",
+            "bloomRadius", "bloomThreshold"
+        ])
+        let descriptors = generatedControlDescriptors(in: code).map { descriptor -> [String: Any] in
+            guard let id = descriptor["id"] as? String, reserved.contains(id) else {
+                return descriptor
+            }
+            var namespaced = descriptor
+            namespaced["parameterID"] = id
+            namespaced["id"] = "model.\(id)"
+            return namespaced
+        }
+        guard JSONSerialization.isValidJSONObject(descriptors),
+              let data = try? JSONSerialization.data(withJSONObject: descriptors,
+                                                     options: [.sortedKeys]),
+              let json = String(data: data, encoding: .utf8) else { return "[]" }
+        return json
+    }
+
+    /// Standard runtime bridge used by the native customization editor. Common
+    /// Three.js properties are detected safely; a module can additionally expose
+    /// `particleWallControls` plus `setParticleWallParameter(id, value)`.
+    static let controlBridgeScript = """
+    (function () {
+      const inst = __pwInstance;
+      if (!inst) return;
+
+      const root = [inst.mesh, inst.group, inst.root, inst.model]
+        .find(value => value && value.position && value.rotation && value.scale);
+      const bloom = inst.bloomPass || (inst.composer && Array.isArray(inst.composer.passes)
+        ? inst.composer.passes.find(pass => pass && typeof pass.strength === 'number' &&
+            typeof pass.radius === 'number' && typeof pass.threshold === 'number')
+        : null);
+      const controls = [];
+      const add = (id, label, category, min, max, step, defaultValue) => {
+        const numericMin = Number(min);
+        const numericMax = Number(max);
+        const numericStep = Number(step);
+        const numericDefault = Number(defaultValue);
+        if (typeof id !== 'string' || !id || controls.some(control => control.id === id)) return;
+        if (![numericMin, numericMax, numericStep, numericDefault].every(Number.isFinite)) return;
+        if (numericMax <= numericMin || numericStep <= 0) return;
+        controls.push({
+          id,
+          label: String(label || id),
+          category: String(category || 'Modelo'),
+          min: numericMin,
+          max: numericMax,
+          step: numericStep,
+          defaultValue: Math.max(numericMin, Math.min(numericMax, numericDefault))
+        });
+      };
+
+      if (root) {
+        add('positionX', 'Posición X', 'Transformación', -100, 100, 0.5, root.position.x);
+        add('positionY', 'Posición Y', 'Transformación', -100, 100, 0.5, root.position.y);
+        add('positionZ', 'Posición Z', 'Transformación', -100, 100, 0.5, root.position.z);
+        add('rotationX', 'Rotación X', 'Transformación', -180, 180, 1, root.rotation.x * 180 / Math.PI);
+        add('rotationY', 'Rotación Y', 'Transformación', -180, 180, 1, root.rotation.y * 180 / Math.PI);
+        add('rotationZ', 'Rotación Z', 'Transformación', -180, 180, 1, root.rotation.z * 180 / Math.PI);
+        add('scale', 'Escala', 'Transformación', 0.1, 4, 0.05, root.scale.x);
+      }
+      if (typeof inst.speedMult === 'number') {
+        add('speed', 'Velocidad', 'Animación', 0, 4, 0.05, inst.speedMult);
+      }
+      if (inst.camera && typeof inst.camera.fov === 'number') {
+        add('cameraFOV', 'Campo de visión', 'Cámara', 20, 120, 1, inst.camera.fov);
+      }
+      if (bloom) {
+        add('bloomStrength', 'Intensidad', 'Bloom', 0, 4, 0.05, bloom.strength);
+        add('bloomRadius', 'Radio', 'Bloom', 0, 1, 0.01, bloom.radius);
+        add('bloomThreshold', 'Umbral', 'Bloom', 0, 1, 0.01, bloom.threshold);
+      }
+
+      const declared = typeof inst.getParticleWallControls === 'function'
+        ? inst.getParticleWallControls()
+        : inst.particleWallControls;
+      if (Array.isArray(declared)) {
+        for (const item of declared) {
+          if (!item || typeof item.id !== 'string') continue;
+          add(item.id, item.label || item.id, item.category || 'Modelo',
+              Number(item.min ?? 0), Number(item.max ?? 1), Number(item.step ?? 0.01),
+              Number(item.defaultValue ?? 0));
+        }
+      }
+      if (Array.isArray(__pwGeneratedControls)) {
+        for (const item of __pwGeneratedControls) {
+          add(item.id, item.label, item.category, item.min, item.max, item.step,
+              inst.__pwParams && Number.isFinite(Number(inst.__pwParams[item.parameterID || item.id]))
+                ? Number(inst.__pwParams[item.parameterID || item.id])
+                : item.defaultValue);
+        }
+      }
+
+      window.__pwGetControls = function () { return controls; };
+      window.__pwApplySettings = function (settings) {
+        if (!settings || typeof settings !== 'object') return;
+        const number = key => Number.isFinite(Number(settings[key])) ? Number(settings[key]) : null;
+
+        if (root) {
+          const x = number('positionX'), y = number('positionY'), z = number('positionZ');
+          if (x !== null) root.position.x = x;
+          if (y !== null) root.position.y = y;
+          if (z !== null) root.position.z = z;
+          const rx = number('rotationX'), ry = number('rotationY'), rz = number('rotationZ');
+          if (rx !== null) root.rotation.x = rx * Math.PI / 180;
+          if (ry !== null) root.rotation.y = ry * Math.PI / 180;
+          if (rz !== null) root.rotation.z = rz * Math.PI / 180;
+          const scale = number('scale');
+          if (scale !== null) root.scale.setScalar(Math.max(0.01, scale));
+        }
+        const speed = number('speed');
+        if (speed !== null && typeof inst.speedMult === 'number') inst.speedMult = speed;
+        const fov = number('cameraFOV');
+        if (fov !== null && inst.camera && typeof inst.camera.fov === 'number') {
+          inst.camera.fov = fov;
+          if (typeof inst.camera.updateProjectionMatrix === 'function') inst.camera.updateProjectionMatrix();
+        }
+        if (bloom) {
+          const strength = number('bloomStrength');
+          const radius = number('bloomRadius');
+          const threshold = number('bloomThreshold');
+          if (strength !== null) bloom.strength = strength;
+          if (radius !== null) bloom.radius = radius;
+          if (threshold !== null) bloom.threshold = threshold;
+        }
+        if (typeof inst.setParticleWallParameter === 'function') {
+          const builtIn = new Set(['positionX', 'positionY', 'positionZ', 'rotationX',
+            'rotationY', 'rotationZ', 'scale', 'speed', 'cameraFOV',
+            'bloomStrength', 'bloomRadius', 'bloomThreshold']);
+          for (const [key, value] of Object.entries(settings)) {
+            if (!builtIn.has(key) && Number.isFinite(Number(value))) {
+              inst.setParticleWallParameter(key, Number(value));
+            }
+          }
+        }
+        if (Array.isArray(__pwGeneratedControls)) {
+          inst.__pwParams = inst.__pwParams || {};
+          for (const item of __pwGeneratedControls) {
+            const value = number(item.id);
+            if (value !== null) inst.__pwParams[item.parameterID || item.id] = value;
+          }
+        }
+        window.__pwControlValues = Object.assign({}, window.__pwControlValues || {}, settings);
+      };
+    })();
+    """
 
     /// Slow camera orbit: keeps static formations (grids, cubes) alive and shows
     /// them in 3D. Runs through requestAnimationFrame, so the injected rAF patch
@@ -151,6 +418,8 @@ final class ImportPipeline {
       const inst = __pwInstance;
       if (!inst || !inst.camera || !inst.camera.position || !inst.camera.lookAt) return;
       const cam = inst.camera;
+      const controlRoot = [inst.mesh, inst.group, inst.root, inst.model]
+        .find(value => value && value.position);
       const p = cam.position;
       const R = Math.sqrt(p.x * p.x + p.y * p.y + p.z * p.z) || 100;
       const el0 = Math.asin(Math.max(-1, Math.min(1, p.y / R)));
@@ -165,7 +434,11 @@ final class ImportPipeline {
           R * Math.sin(el),
           R * Math.cos(el) * Math.cos(angle)
         );
-        cam.lookAt(0, 0, 0);
+        if (controlRoot) {
+          cam.lookAt(controlRoot.position);
+        } else {
+          cam.lookAt(0, 0, 0);
+        }
       }
       requestAnimationFrame(orbit);
     })();
@@ -179,6 +452,11 @@ final class ImportPipeline {
         for wallpaper in LibraryManager.shared.wallpapers where wallpaper.manifest.source == "es-module" {
             let moduleURL = wallpaper.folderURL.appendingPathComponent("assets/user-module.js")
             guard let code = try? String(contentsOf: moduleURL, encoding: .utf8) else { continue }
+            let adaptedURL = wallpaper.folderURL.appendingPathComponent("assets/pw-user-module.js")
+            let adapted = Self.adaptGeneratedModule(code)
+            if (try? String(contentsOf: adaptedURL, encoding: .utf8)) != adapted {
+                try? adapted.write(to: adaptedURL, atomically: true, encoding: .utf8)
+            }
             let html = template.replacingOccurrences(of: "/*__PW_MODULE_BOOTSTRAP__*/",
                                                      with: Self.moduleBootstrap(for: code))
             let indexURL = wallpaper.folderURL.appendingPathComponent("index.html")

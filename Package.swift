@@ -13,8 +13,19 @@ let package = Package(
                 .copy("Resources/three-esm"),
                 .copy("Resources/template.html"),
                 .copy("Resources/template-module.html"),
-                .copy("Resources/DefaultWallpaper")
+                .copy("Resources/DefaultWallpaper"),
+                .copy("Resources/TwinVortexWallpaper"),
+                .copy("Resources/OrbitalBloomWallpaper"),
+                .copy("Resources/HexagonalRosetteWallpaper"),
+                .copy("Resources/NoiseRainWallpaper"),
+                .copy("Resources/PrimeSpiralWallpaper"),
+                .copy("Resources/TorusOrbitWallpaper"),
+                .copy("Resources/ChromaticRingsWallpaper")
             ]
+        ),
+        .testTarget(
+            name: "ParticleWallTests",
+            dependencies: ["ParticleWall"]
         )
     ]
 )

@@ -7,7 +7,11 @@ final class WallpaperManager {
 
     private(set) var controllers: [String: WallpaperWindowController] = [:] // displayUUID -> controller
     private let defaults = UserDefaults.standard
+    private let lastFrames = LastFrameStore.shared
     private var lastRenderScale: Double = 0
+    private var snapshotTimer: Timer?
+    private var snapshotCaptureTokens: [String: UUID] = [:]
+    private var persistedSnapshotKeys: Set<LastFrameStore.Key> = []
 
     private init() {}
 
@@ -22,6 +26,7 @@ final class WallpaperManager {
                                                name: UserDefaults.didChangeNotification,
                                                object: nil)
         rebuildControllers()
+        startSnapshotTimer()
     }
 
     /// Render scale is baked into each webview's user scripts at creation,
@@ -31,7 +36,7 @@ final class WallpaperManager {
         guard scale != lastRenderScale else { return }
         lastRenderScale = scale
         for controller in controllers.values {
-            controller.recreateWebView()
+            controller.refreshRenderScale()
         }
     }
 
@@ -62,6 +67,7 @@ final class WallpaperManager {
     private func rebuildControllers() {
         let current = screensByUUID
         let currentUUIDs = Set(current.map(\.uuid))
+        var addedUUIDs: [String] = []
 
         // Drop controllers for disconnected screens.
         for (uuid, controller) in controllers where !currentUUIDs.contains(uuid) {
@@ -77,11 +83,17 @@ final class WallpaperManager {
                 let controller = WallpaperWindowController(screen: screen, displayUUID: uuid)
                 controllers[uuid] = controller
                 controller.show()
-                restoreAssignment(for: uuid)
+                addedUUIDs.append(uuid)
             }
         }
 
+        // Apply lock/sleep/Power Save before loading content into new screens.
+        // A deep-asleep controller then records its assignment without creating
+        // a short-lived WebContent process.
         PowerManager.shared.pushStateToAllControllers()
+        for uuid in addedUUIDs {
+            restoreAssignment(for: uuid)
+        }
     }
 
     // MARK: - Applying wallpapers
@@ -112,9 +124,13 @@ final class WallpaperManager {
 
     private func load(_ wallpaper: Wallpaper, into controller: WallpaperWindowController) {
         controller.manifestFPS = wallpaper.manifest.fps ?? 0
+        let controls = WallpaperControlStore.shared.values(for: wallpaper.id,
+                                                           displayUUID: controller.displayUUID)
         controller.load(indexURL: wallpaper.indexURL,
                         rootURL: wallpaper.folderURL,
-                        wallpaperID: wallpaper.id)
+                        wallpaperID: wallpaper.id,
+                        rendererKind: wallpaper.manifest.effectiveRenderer,
+                        controlValues: controls)
     }
 
     // MARK: - System wallpaper sync
@@ -127,20 +143,27 @@ final class WallpaperManager {
               let entry = screensByUUID.first(where: { $0.uuid == displayUUID }),
               let id = controller.currentWallpaperID,
               let wallpaper = LibraryManager.shared.wallpaper(id: id) else { return }
+        let persisted = lastFrames.persistedURL(displayUUID: displayUUID, wallpaperID: id)
         let imageURL: URL
-        if FileManager.default.fileExists(atPath: wallpaper.thumbnailURL.path) {
+        if FileManager.default.fileExists(atPath: persisted.path) {
+            imageURL = persisted
+        } else if FileManager.default.fileExists(atPath: wallpaper.thumbnailURL.path) {
             imageURL = wallpaper.thumbnailURL
         } else if let black = Self.blackFallbackImage() {
             imageURL = black
         } else {
             return
         }
+        setSystemWallpaper(imageURL, for: entry.screen)
+    }
+
+    private func setSystemWallpaper(_ imageURL: URL, for screen: NSScreen) {
         let options: [NSWorkspace.DesktopImageOptionKey: Any] = [
             .imageScaling: NSImageScaling.scaleAxesIndependently.rawValue,
             .allowClipping: true
         ]
         do {
-            try NSWorkspace.shared.setDesktopImageURL(imageURL, for: entry.screen, options: options)
+            try NSWorkspace.shared.setDesktopImageURL(imageURL, for: screen, options: options)
         } catch {
             NSLog("ParticleWall: could not set system wallpaper: \(error)")
         }
@@ -187,6 +210,8 @@ final class WallpaperManager {
         if defaults.string(forKey: DefaultsKey.defaultWallpaper) == id.uuidString {
             defaults.removeObject(forKey: DefaultsKey.defaultWallpaper)
         }
+        WallpaperControlStore.shared.removeValues(for: id)
+        lastFrames.remove(wallpaperID: id)
     }
 
     /// Which wallpaper is active on a given screen (for gallery highlight).
@@ -198,6 +223,92 @@ final class WallpaperManager {
         case .screen(let uuid):
             return controllers[uuid]?.currentWallpaperID
         }
+    }
+
+    // MARK: - Wallpaper controls
+
+    func controlValues(for wallpaperID: UUID, target: ScreenTarget) -> [String: Double] {
+        switch target {
+        case .screen(let displayUUID):
+            return WallpaperControlStore.shared.values(for: wallpaperID,
+                                                       displayUUID: displayUUID)
+        case .allScreens:
+            let defaults = WallpaperControlStore.shared.defaultValues(for: wallpaperID)
+            if !defaults.isEmpty { return defaults }
+            guard let uuid = controllers.keys.sorted().first else { return [:] }
+            return WallpaperControlStore.shared.values(for: wallpaperID, displayUUID: uuid)
+        }
+    }
+
+    func setControlValues(_ values: [String: Double],
+                          for wallpaperID: UUID,
+                          target: ScreenTarget) {
+        switch target {
+        case .screen(let displayUUID):
+            WallpaperControlStore.shared.setValues(values,
+                                                   for: wallpaperID,
+                                                   displayUUID: displayUUID)
+        case .allScreens:
+            WallpaperControlStore.shared.setDefaultValues(values, for: wallpaperID)
+            for uuid in controllers.keys {
+                WallpaperControlStore.shared.setValues(values,
+                                                       for: wallpaperID,
+                                                       displayUUID: uuid)
+            }
+        }
+        previewControlValues(values, for: wallpaperID, target: target)
+    }
+
+    /// Restores the renderer's declared defaults. For one display, keep an
+    /// explicit default-valued configuration so a custom "All screens" profile
+    /// cannot leak back into it. For all displays, remove every saved override.
+    func resetControlValues(to modelDefaults: [String: Double],
+                            for wallpaperID: UUID,
+                            target: ScreenTarget) {
+        switch target {
+        case .screen(let displayUUID):
+            WallpaperControlStore.shared.setValues(modelDefaults,
+                                                   for: wallpaperID,
+                                                   displayUUID: displayUUID)
+        case .allScreens:
+            WallpaperControlStore.shared.removeValues(for: wallpaperID)
+        }
+        previewControlValues(modelDefaults, for: wallpaperID, target: target)
+    }
+
+    /// Applies slider changes immediately without writing UserDefaults for every
+    /// intermediate mouse event. The editor persists once dragging ends.
+    func previewControlValues(_ values: [String: Double],
+                              for wallpaperID: UUID,
+                              target: ScreenTarget) {
+        switch target {
+        case .screen(let displayUUID):
+            if let controller = controllers[displayUUID],
+               controller.currentWallpaperID == wallpaperID {
+                controller.applyControlValues(values)
+            }
+        case .allScreens:
+            for controller in controllers.values where controller.currentWallpaperID == wallpaperID {
+                controller.applyControlValues(values)
+            }
+        }
+    }
+
+    func fetchControlDescriptors(for wallpaperID: UUID,
+                                 target: ScreenTarget,
+                                 completion: @escaping ([WallpaperControlDescriptor]) -> Void) {
+        let candidates: [WallpaperWindowController]
+        switch target {
+        case .screen(let displayUUID):
+            candidates = controllers[displayUUID].map { [$0] } ?? []
+        case .allScreens:
+            candidates = controllers.keys.sorted().compactMap { controllers[$0] }
+        }
+        guard let controller = candidates.first(where: { $0.currentWallpaperID == wallpaperID }) else {
+            completion([])
+            return
+        }
+        controller.fetchControlDescriptors(completion: completion)
     }
 
     // MARK: - Persistence
@@ -217,20 +328,35 @@ final class WallpaperManager {
         syncSystemWallpaper(for: displayUUID)
     }
 
-    func restoreAllAssignments() {
-        for uuid in controllers.keys {
-            restoreAssignment(for: uuid)
-        }
-        // load() wakes deep-asleep controllers; re-assert Power Save if active.
-        PowerManager.shared.pushStateToAllControllers()
-    }
-
     // MARK: - Playback fan-out
 
-    func setGlobalPaused(_ paused: Bool, fpsCap: Int, deepSleep: Bool = false) {
-        for controller in controllers.values {
+    func setGlobalPaused(_ paused: Bool,
+                         fpsCap: Int,
+                         deepSleep: Bool = false,
+                         preservingFrame: Bool = true,
+                         persistSnapshots: Bool = false) {
+        for (displayUUID, controller) in controllers {
             if deepSleep {
-                controller.enterDeepSleep()
+                let wallpaperID = controller.currentWallpaperID
+                let fallback = wallpaperID.flatMap {
+                    lastFrames.bestImage(displayUUID: displayUUID, wallpaperID: $0)
+                }
+                if persistSnapshots {
+                    persistBestFrame(for: displayUUID)
+                }
+                controller.enterDeepSleep(
+                    preservingFrame: preservingFrame,
+                    fallbackImage: fallback
+                ) { [weak self, weak controller] image in
+                    guard let self, let controller,
+                          let wallpaperID = controller.currentWallpaperID else { return }
+                    self.lastFrames.cache(image,
+                                          displayUUID: displayUUID,
+                                          wallpaperID: wallpaperID)
+                    if persistSnapshots {
+                        self.persistBestFrame(for: displayUUID)
+                    }
+                }
             } else if controller.isDeepAsleep {
                 controller.exitDeepSleep()
             }
@@ -242,6 +368,114 @@ final class WallpaperManager {
     func kickAllAfterUnlock() {
         for controller in controllers.values {
             controller.kickAfterUnlock()
+        }
+    }
+
+    // MARK: - Last-frame capture
+
+    private func startSnapshotTimer() {
+        snapshotTimer?.invalidate()
+        let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
+            self?.refreshSnapshotCache()
+        }
+        timer.tolerance = 0.5
+        RunLoop.main.add(timer, forMode: .common)
+        snapshotTimer = timer
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            self?.refreshSnapshotCache()
+        }
+    }
+
+    private func refreshSnapshotCache() {
+        for (displayUUID, controller) in controllers {
+            guard let wallpaperID = controller.currentWallpaperID,
+                  !controller.isDeepAsleep,
+                  snapshotCaptureTokens[displayUUID] == nil else { continue }
+            let token = UUID()
+            snapshotCaptureTokens[displayUUID] = token
+            controller.captureSnapshot { [weak self, weak controller] image in
+                guard let self, self.snapshotCaptureTokens[displayUUID] == token else { return }
+                self.snapshotCaptureTokens.removeValue(forKey: displayUUID)
+                guard let image, controller?.currentWallpaperID == wallpaperID else { return }
+                self.lastFrames.cache(image,
+                                      displayUUID: displayUUID,
+                                      wallpaperID: wallpaperID)
+                let key = LastFrameStore.Key(displayUUID: displayUUID,
+                                             wallpaperID: wallpaperID)
+                if self.persistedSnapshotKeys.insert(key).inserted,
+                   let controller {
+                    _ = self.lastFrames.persist(image,
+                                                displayUUID: displayUUID,
+                                                wallpaperID: wallpaperID,
+                                                targetPixelSize: controller.snapshotPixelSize)
+                    self.syncSystemWallpaper(for: displayUUID)
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard self?.snapshotCaptureTokens[displayUUID] == token else { return }
+                self?.snapshotCaptureTokens.removeValue(forKey: displayUUID)
+            }
+        }
+    }
+
+    private func persistBestFrame(for displayUUID: String) {
+        guard let controller = controllers[displayUUID],
+              let wallpaperID = controller.currentWallpaperID else { return }
+        if let image = lastFrames.cachedImage(displayUUID: displayUUID,
+                                              wallpaperID: wallpaperID) {
+            _ = lastFrames.persist(image,
+                                   displayUUID: displayUUID,
+                                   wallpaperID: wallpaperID,
+                                   targetPixelSize: controller.snapshotPixelSize)
+        }
+        syncSystemWallpaper(for: displayUUID)
+    }
+
+    /// Captures every active display before AppKit completes termination. The
+    /// timeout guarantees that a suspended WebContent/GPU process cannot hang Quit.
+    func prepareForTermination(completion: @escaping () -> Void) {
+        let startedAt = CFAbsoluteTimeGetCurrent()
+        snapshotTimer?.invalidate()
+        snapshotTimer = nil
+
+        let candidates = controllers.compactMap { displayUUID, controller -> (String, WallpaperWindowController, UUID)? in
+            guard let wallpaperID = controller.currentWallpaperID else { return nil }
+            return (displayUUID, controller, wallpaperID)
+        }
+        guard !candidates.isEmpty else {
+            completion()
+            return
+        }
+
+        var pending = Set(candidates.map { $0.0 })
+        var didFinish = false
+        let finishIfReady: (Bool) -> Void = { [weak self] timedOut in
+            guard let self, !didFinish else { return }
+            if !timedOut && !pending.isEmpty { return }
+            didFinish = true
+            for (displayUUID, _, _) in candidates {
+                self.persistBestFrame(for: displayUUID)
+            }
+            let duration = CFAbsoluteTimeGetCurrent() - startedAt
+            NSLog("ParticleWall: prepared last frames for termination in %.3fs", duration)
+            completion()
+        }
+
+        for (displayUUID, controller, wallpaperID) in candidates {
+            controller.captureSnapshot { [weak self] image in
+                guard let self, !didFinish else { return }
+                if let image, controller.currentWallpaperID == wallpaperID {
+                    self.lastFrames.cache(image,
+                                          displayUUID: displayUUID,
+                                          wallpaperID: wallpaperID)
+                }
+                pending.remove(displayUUID)
+                finishIfReady(false)
+            }
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            finishIfReady(true)
         }
     }
 }

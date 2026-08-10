@@ -5,23 +5,94 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var galleryWindow: NSWindow?
     private var settingsWindow: NSWindow?
+    private var rendererSmokeWindows: [NSWindow] = []
+    private var rendererSmokeTests: [MetalParticleRenderer] = []
+    private var terminationPending = false
+    private var terminationPrepared = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         UserDefaults.standard.register(defaults: [
             DefaultsKey.fpsCap: 30,
-            DefaultsKey.renderScale: 1.5
+            DefaultsKey.renderScale: 1.5,
+            DefaultsKey.adaptiveQuality: true
         ])
         setupStatusItem()
 
         LibraryManager.shared.loadLibrary()
         ImportPipeline.shared.upgradeModuleWallpapers()
-        WallpaperManager.shared.start()
+        LibraryManager.shared.upgradeBundledWallpapers()
         PowerManager.shared.start()
-        WallpaperManager.shared.restoreAllAssignments()
+        WallpaperManager.shared.start()
         LibraryManager.shared.installBundledDefaultIfNeeded()
         handleCLIImport()
+        handleCLIApplyBundledDefault()
         handleCLIDiag()
+        handleCLIRendererSmokeTest()
         handleCLIPowerSaveTest()
+    }
+
+    /// `ParticleWall --apply-bundled-default` selects the native bundled
+    /// animation on every screen. Useful for upgrades and automated verification.
+    private func handleCLIApplyBundledDefault() {
+        guard CommandLine.arguments.contains("--apply-bundled-default") else { return }
+        if LibraryManager.shared.applyBundledDefault() {
+            NSLog("ParticleWall: applied native bundled default")
+        } else {
+            NSLog("ParticleWall: bundled default is unavailable")
+        }
+    }
+
+    /// `ParticleWall --renderer-smoke-test` creates every native renderer for
+    /// two seconds and logs frame counts. It does not alter assignments.
+    private func handleCLIRendererSmokeTest() {
+        guard CommandLine.arguments.contains("--renderer-smoke-test") else { return }
+        for (index, kind) in WallpaperRendererKind.nativeMetalCases.enumerated() {
+            let window = NSWindow(
+                contentRect: NSRect(x: -400 - index * 270, y: -400, width: 256, height: 256),
+                styleMask: [.borderless],
+                backing: .buffered,
+                defer: false
+            )
+            guard let renderer = MetalParticleRenderer(frame: window.contentView?.bounds ?? .zero,
+                                                       kind: kind) else {
+                NSLog("ParticleWall: renderer smoke test failed to create \(kind.rawValue)")
+                continue
+            }
+            renderer.applyControlValues([
+                "graphEnabled": 1,
+                "graphDistance": 0.085,
+                "graphConnections": 2,
+                "graphOpacity": 10,
+                "brightness": 10
+            ])
+            window.contentView?.addSubview(renderer.view)
+            renderer.setPlayback(paused: false, fpsCap: 30, adaptiveQuality: false)
+            rendererSmokeWindows.append(window)
+            rendererSmokeTests.append(renderer)
+            window.orderBack(nil)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            self?.rendererSmokeTests.forEach { renderer in
+                renderer.captureSnapshot(targetPixelSize: CGSize(width: 512, height: 512)) { image in
+                    if let image {
+                        NSLog("ParticleWall: renderer snapshot \(renderer.kind.rawValue) " +
+                              "\(Int(image.size.width))x\(Int(image.size.height))")
+                    } else {
+                        NSLog("ParticleWall: renderer snapshot failed \(renderer.kind.rawValue)")
+                    }
+                }
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self else { return }
+            self.rendererSmokeTests.forEach {
+                NSLog("ParticleWall: renderer smoke test \($0.diagnosticSummary)")
+                $0.tearDown()
+            }
+            self.rendererSmokeWindows.forEach { $0.orderOut(nil) }
+            self.rendererSmokeTests.removeAll()
+            self.rendererSmokeWindows.removeAll()
+        }
     }
 
     /// `ParticleWall --powersave-test`: toggles Power Save on at +8s and off at
@@ -52,17 +123,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
             for (uuid, controller) in WallpaperManager.shared.controllers {
                 if controller.isDeepAsleep {
-                    NSLog("ParticleWall: diag screen \(uuid.prefix(8)): deep asleep (no webview)")
+                    NSLog("ParticleWall: diag screen \(uuid.prefix(8)): deep asleep (no renderer)")
                     continue
                 }
-                controller.webView.evaluateJavaScript("window.__pwFrameCount|0") { start, _ in
+                guard let webView = controller.webView else {
+                    NSLog("ParticleWall: diag screen \(uuid.prefix(8)): \(controller.diagnosticSummary)")
+                    continue
+                }
+                webView.evaluateJavaScript("window.__pwFrameCount|0") { start, _ in
                     let start = start as? Int ?? 0
                     DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                        controller.webView.evaluateJavaScript(
+                        webView.evaluateJavaScript(
                             "'cap:' + window.__pwFPSCap + ' dpr:' + window.devicePixelRatio" +
                             " + ' inner:' + window.innerWidth + '/' + document.documentElement.clientWidth" +
                             " + ' frames:' + ((window.__pwFrameCount|0) - \(start))" +
-                            " + ' paused:' + window.__pwPaused + ' errors:' + JSON.stringify(window.__pwErrors || [])"
+                            " + ' paused:' + window.__pwPaused" +
+                            " + ' adaptiveCap:' + (window.__pwAdaptiveCap || 0)" +
+                            " + ' frameCost:' + Number(window.__pwAverageFrameCost || 0).toFixed(2)" +
+                            " + ' controls:' + JSON.stringify(window.__pwGetControls" +
+                            " ? window.__pwGetControls().map(function(c){return c.id;}) : [])" +
+                            " + ' errors:' + JSON.stringify(window.__pwErrors || [])"
                         ) { result, _ in
                             NSLog("ParticleWall: diag screen \(uuid.prefix(8)): \(result ?? "nil") in 2s")
                         }
@@ -178,6 +258,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleGallery() {
         if let window = galleryWindow, window.isVisible {
+            NotificationCenter.default.post(name: .pwGalleryDidHide, object: nil)
             window.orderOut(nil)
         } else {
             showGallery()
@@ -194,6 +275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.setContentSize(NSSize(width: 720, height: 480))
             window.minSize = NSSize(width: 520, height: 360)
             window.isReleasedWhenClosed = false
+            window.delegate = self
             window.center()
             galleryWindow = window
         }
@@ -217,5 +299,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func quit() {
         NSApp.terminate(nil)
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if terminationPrepared { return .terminateNow }
+        if terminationPending { return .terminateLater }
+
+        terminationPending = true
+        WallpaperManager.shared.prepareForTermination { [weak self, weak sender] in
+            guard let self else { return }
+            self.terminationPrepared = true
+            self.terminationPending = false
+            sender?.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+}
+
+extension AppDelegate: NSWindowDelegate {
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window === galleryWindow else { return }
+        NotificationCenter.default.post(name: .pwGalleryDidHide, object: nil)
     }
 }

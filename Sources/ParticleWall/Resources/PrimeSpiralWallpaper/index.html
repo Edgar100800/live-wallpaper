@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<script>
+  // Canvas fallback and thumbnail source. Cap this CPU path at 300k; the live
+  // Metal renderer carries all 78,498 primes below one million.
+  const canvas = document.getElementById('canvas');
+  const context = canvas.getContext('2d', { alpha: false });
+  const limit = 300000;
+  const composite = new Uint8Array(limit + 1);
+  const primes = [];
+  let time = 1;
+
+  for (let candidate = 2; candidate * candidate <= limit; candidate++) {
+    if (composite[candidate]) continue;
+    for (let multiple = candidate * candidate; multiple <= limit; multiple += candidate) {
+      composite[multiple] = 1;
+    }
+  }
+  for (let value = 2; value <= limit; value++) {
+    if (!composite[value]) primes.push(value);
+  }
+
+  function resize() {
+    const ratio = Math.min(window.devicePixelRatio || 1, 1.5);
+    canvas.width = Math.max(1, Math.round(innerWidth * ratio));
+    canvas.height = Math.max(1, Math.round(innerHeight * ratio));
+  }
+
+  function draw() {
+    requestAnimationFrame(draw);
+    if (window.__pwPaused) return;
+    context.fillStyle = '#000';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = '#fff';
+    const scaleX = canvas.width / 800;
+    const scaleY = canvas.height / 800;
+    const size = Math.max(1, Math.min(scaleX, scaleY) * 2);
+
+    for (const prime of primes) {
+      const x = prime * Math.sin(prime * time) / 99 + 400;
+      const y = prime * Math.cos(prime * time) / 99 + 400;
+      context.fillRect(x * scaleX - size / 2, y * scaleY - size / 2, size, size);
+    }
+    time += 1e-7;
+  }
+
+  addEventListener('resize', resize);
+  resize();
+  requestAnimationFrame(draw);
+</script>
+</body>
+</html>

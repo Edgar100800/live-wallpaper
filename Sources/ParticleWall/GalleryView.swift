@@ -11,6 +11,7 @@ struct GalleryView: View {
     @State private var renaming: Wallpaper?
     @State private var renameText = ""
     @State private var activeRefresh = 0
+    @State private var customizing: Wallpaper?
 
     private var filteredWallpapers: [Wallpaper] {
         guard !searchText.isEmpty else { return library.wallpapers }
@@ -55,6 +56,9 @@ struct GalleryView: View {
                 renaming = nil
             }
             Button("Cancelar", role: .cancel) { renaming = nil }
+        }
+        .sheet(item: $customizing) { wallpaper in
+            WallpaperCustomizationView(wallpaper: wallpaper, target: target)
         }
     }
 
@@ -110,6 +114,10 @@ struct GalleryView: View {
                         wallpaper: wallpaper,
                         isActive: WallpaperManager.shared.activeWallpaperID(on: target) == wallpaper.id,
                         onApply: { WallpaperManager.shared.apply(wallpaper, to: target) },
+                        onCustomize: {
+                            WallpaperManager.shared.apply(wallpaper, to: target)
+                            customizing = wallpaper
+                        },
                         onRename: { renaming = wallpaper; renameText = wallpaper.name },
                         onRegenerate: { library.regenerateThumbnail(wallpaper) },
                         onReveal: { library.revealInFinder(wallpaper) },
@@ -192,6 +200,7 @@ struct WallpaperCard: View {
     let wallpaper: Wallpaper
     let isActive: Bool
     let onApply: () -> Void
+    let onCustomize: () -> Void
     let onRename: () -> Void
     let onRegenerate: () -> Void
     let onReveal: () -> Void
@@ -219,6 +228,16 @@ struct WallpaperCard: View {
                 RoundedRectangle(cornerRadius: 10)
                     .strokeBorder(isActive ? Color.accentColor : Color.clear, lineWidth: 3)
             )
+            .overlay(alignment: .bottomTrailing) {
+                if hovering {
+                    optionsMenu
+                        .padding(8)
+                        .transition(.opacity.combined(with: .scale(
+                            scale: 0.94,
+                            anchor: .bottomTrailing
+                        )))
+                }
+            }
 
             Text(wallpaper.name)
                 .font(.callout)
@@ -230,8 +249,16 @@ struct WallpaperCard: View {
             hovering = inside
             if !inside { showLivePreview = false }
         }
-        .contextMenu {
+        .onReceive(NotificationCenter.default.publisher(for: .pwGalleryDidHide)) { _ in
+            showLivePreview = false
+        }
+        .animation(.easeOut(duration: 0.14), value: hovering)
+    }
+
+    private var optionsMenu: some View {
+        Menu {
             Button("Aplicar", action: onApply)
+            Button("Personalizar…", action: onCustomize)
             Menu("Límite de FPS") {
                 fpsOption("Global", fps: nil)
                 fpsOption("15 fps", fps: 15)
@@ -244,8 +271,31 @@ struct WallpaperCard: View {
             Button("Regenerar thumbnail", action: onRegenerate)
             Button("Mostrar en Finder", action: onReveal)
             Divider()
-            Button("Eliminar", role: .destructive, action: onDelete)
+            if wallpaper.isBundled {
+                Button {} label: {
+                    Label("Fondo incluido · Protegido", systemImage: "lock.fill")
+                }
+                .disabled(true)
+            } else {
+                Button("Eliminar", role: .destructive, action: onDelete)
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 28, height: 28)
+                .background(.black.opacity(0.58), in: RoundedRectangle(cornerRadius: 8))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(.white.opacity(0.18))
+                }
+                .shadow(color: .black.opacity(0.28), radius: 4, y: 2)
         }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .frame(width: 28, height: 28)
+        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .help("Opciones")
     }
 
     private func fpsOption(_ label: String, fps: Int?) -> some View {
@@ -305,6 +355,14 @@ struct WebViewPreview: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: WKWebView, context: Context) {}
+
+    static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
+        nsView.stopLoading()
+        nsView.navigationDelegate = nil
+        nsView.removeFromSuperview()
+        coordinator.delegate?.onDidFinish = nil
+        coordinator.delegate = nil
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 

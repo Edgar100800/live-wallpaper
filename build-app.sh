@@ -17,6 +17,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$BIN/ParticleWall" "$APP/Contents/MacOS/ParticleWall"
 cp "$ROOT/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/Assets/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 cp -R "$BIN/ParticleWall_ParticleWall.bundle" "$APP/Contents/Resources/"
 
 codesign --force --deep --sign - "$APP"

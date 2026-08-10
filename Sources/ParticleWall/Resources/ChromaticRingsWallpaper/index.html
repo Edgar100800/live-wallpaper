@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<script>
+  // Canvas fallback and thumbnail source. The live wallpaper runs the same
+  // eleven-ring formula natively in Metal with a bounded temporal trail.
+  const canvas = document.getElementById('canvas');
+  const context = canvas.getContext('2d', { alpha: false });
+  let time = 0;
+
+  function fract(value) {
+    return value - Math.floor(value);
+  }
+
+  function hash(x, y, z) {
+    let px = fract(x * 0.1031);
+    let py = fract(y * 0.1031);
+    let pz = fract(z * 0.1031);
+    const mixed = px * (py + 33.33) + py * (pz + 33.33) + pz * (px + 33.33);
+    px += mixed;
+    py += mixed;
+    pz += mixed;
+    return fract((px + py) * pz);
+  }
+
+  function noise3(x, y, z) {
+    const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
+    let fx = x - ix, fy = y - iy, fz = z - iz;
+    fx = fx * fx * (3 - 2 * fx);
+    fy = fy * fy * (3 - 2 * fy);
+    fz = fz * fz * (3 - 2 * fz);
+    const x00 = hash(ix, iy, iz) * (1 - fx) + hash(ix + 1, iy, iz) * fx;
+    const x10 = hash(ix, iy + 1, iz) * (1 - fx) + hash(ix + 1, iy + 1, iz) * fx;
+    const x01 = hash(ix, iy, iz + 1) * (1 - fx) + hash(ix + 1, iy, iz + 1) * fx;
+    const x11 = hash(ix, iy + 1, iz + 1) * (1 - fx) + hash(ix + 1, iy + 1, iz + 1) * fx;
+    return (x00 * (1 - fy) + x10 * fy) * (1 - fz)
+      + (x01 * (1 - fy) + x11 * fy) * fz;
+  }
+
+  function resize() {
+    const ratio = Math.min(window.devicePixelRatio || 1, 1.5);
+    canvas.width = Math.max(1, Math.round(innerWidth * ratio));
+    canvas.height = Math.max(1, Math.round(innerHeight * ratio));
+    context.fillStyle = '#000';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  function draw() {
+    requestAnimationFrame(draw);
+    if (window.__pwPaused) return;
+    time += 1;
+
+    context.filter = 'none';
+    context.fillStyle = 'rgba(0,0,0,0.03)';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.filter = 'blur(0.8px)';
+
+    const scaleX = canvas.width / 720;
+    const scaleY = canvas.height / 720;
+    for (let d = 330; d >= 30; d -= 30) {
+      const tangent = Math.tan(d / 199 - time / 99);
+      const energy = Math.min(tangent * tangent, 64);
+      const alpha = Math.max(0.018, Math.min(0.82, 0.7 / Math.max(energy, 0.025)));
+      const hue = Math.min(d, 255) / 255 * 360;
+      context.fillStyle = `hsla(${hue},20%,100%,${alpha})`;
+      for (let r = 0; r < Math.PI * 2; r += 2 / d) {
+        const radius = d
+          + Math.sin(r * 9 + time / 9 * d / 720)
+          * d / 4 * noise3(r * 99, d, 0) * energy;
+        const angle = r - Math.PI / 2;
+        const x = (Math.cos(angle) * radius + 360) * scaleX;
+        const y = (Math.sin(angle) * radius + 360) * scaleY;
+        context.fillRect(x - 1, y - 1, 2, 2);
+      }
+    }
+  }
+
+  addEventListener('resize', resize);
+  resize();
+  requestAnimationFrame(draw);
+</script>
+</body>
+</html>

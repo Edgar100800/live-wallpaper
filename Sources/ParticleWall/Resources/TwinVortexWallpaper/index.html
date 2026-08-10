@@ -10,8 +10,7 @@
 <body>
 <canvas id="canvas"></canvas>
 <script>
-  // Web fallback and thumbnail source for the native Metal default. This is the
-  // expanded form of the original compact p5.js expression.
+  // Canvas fallback and thumbnail source. The live wallpaper uses Metal.
   const canvas = document.getElementById('canvas');
   const context = canvas.getContext('2d', { alpha: false });
   let time = 0;
@@ -25,28 +24,26 @@
   function draw() {
     requestAnimationFrame(draw);
     if (window.__pwPaused) return;
-    time += Math.PI / 80;
-
+    time += Math.PI / 45;
     context.fillStyle = '#030609';
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.fillStyle = 'rgba(232,255,255,0.57)';
-
     const fit = Math.min(canvas.width, canvas.height) / 400;
     const offsetX = (canvas.width - 400 * fit) / 2;
     const offsetY = (canvas.height - 400 * fit) / 2;
-    const pointSize = Math.max(1.25, fit * 1.1);
+    const size = Math.max(1.25, fit * 1.1);
 
-    for (let i = 9999; i >= 0; i--) {
-      const y = i / 235;
-      const k = (4 + Math.cos(i / 9 - time * 2)) * Math.cos(i / 35);
-      const e = y / 7 - 13;
-      const d = Math.hypot(k, e) + Math.sin(e / 9 + time / 2) - 4;
-      const q = 2 * Math.sin(k * 3)
-        - y / 35 * k * (9 + k * Math.sin(Math.cos(e) * 9 - d * 2 + time));
-      const c = d - time;
-      const x = q + 40 * Math.cos(c) + 200;
-      const py = q * Math.sin(c) + d * 35;
-      context.fillRect(offsetX + x * fit, offsetY + py * fit, pointSize, pointSize);
+    for (let i = 29999; i >= 0; i--) {
+      const m = (i % 2) * 3;
+      const k = 14 * Math.cos(i / 39);
+      const e = i / 1200 - 13;
+      const d = (k * k + e * e) / 59 + 1;
+      const q = 89 - Math.sin(k) * d
+        + k * (8 / d + Math.sin(d * 3 + e / 9 - time));
+      const c = d * 0.45 - Math.sin(time - d) / 8 - time / 8 + m;
+      const x = q * Math.sin(c) + 200;
+      const y = (q + 40 + 30 * Math.sin(c * 2 + m)) * Math.cos(c) + 200;
+      context.fillRect(offsetX + x * fit, offsetY + y * fit, size, size);
     }
   }
 
