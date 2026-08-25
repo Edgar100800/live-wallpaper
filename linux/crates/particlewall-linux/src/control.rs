@@ -1,0 +1,335 @@
+//! Control plane shared by the Unix socket CLI and the system tray.
+//! Commands are applied on the GTK main thread; internal callers (tray
+//! menu items) send without a reply stream.
+
+use gtk4::glib;
+use gtk4::prelude::*;
+use std::cell::RefCell;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
+
+#[cfg(feature = "web")]
+use crate::web::tray::ParticleWallTray;
+use crate::web::{library, DEFAULT_FPS_CAP};
+use webkit6::prelude::*;
+use webkit6::WebView;
+
+pub fn socket_path() -> std::path::PathBuf {
+    let runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
+    std::path::Path::new(&runtime).join("particlewall.sock")
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Command {
+    Pause,
+    Resume,
+    TogglePause,
+    Fps(u32),
+    Apply(String),
+    /// Merge partial color settings into the current appearance.
+    SetColors(library::ColorSettings),
+    SaveProfile(String),
+    DeleteProfile(String),
+    ApplyProfile(String),
+    Status,
+    Quit,
+}
+
+impl Command {
+    fn parse(line: &str) -> Option<Self> {
+        let v: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+        match v.get("cmd")?.as_str()? {
+            "pause" => Some(Self::Pause),
+            "resume" => Some(Self::Resume),
+            "toggle-pause" | "toggle" => Some(Self::TogglePause),
+            "fps" => Some(Self::Fps(v.get("value")?.as_u64()? as u32)),
+            "apply" => Some(Self::Apply(v.get("value")?.as_str()?.into())),
+            "set-colors" => Some(Self::SetColors(
+                serde_json::from_value(v.get("colors").cloned()?).ok()?,
+            )),
+            "profile-save" => Some(Self::SaveProfile(v.get("name")?.as_str()?.into())),
+            "profile-delete" => Some(Self::DeleteProfile(v.get("name")?.as_str()?.into())),
+            "profile-apply" => Some(Self::ApplyProfile(v.get("name")?.as_str()?.into())),
+            "status" => Some(Self::Status),
+            "quit" => Some(Self::Quit),
+            _ => None,
+        }
+    }
+}
+
+/// Mirrors playback state for threads outside the GTK main thread
+/// (the tray service reads these when refreshing its icon).
+#[derive(Clone)]
+pub struct PlaybackFlags {
+    pub paused: Arc<AtomicBool>,
+    pub fps_cap: Arc<AtomicU32>,
+}
+
+impl Default for PlaybackFlags {
+    fn default() -> Self {
+        Self {
+            paused: Arc::new(AtomicBool::new(false)),
+            fps_cap: Arc::new(AtomicU32::new(DEFAULT_FPS_CAP)),
+        }
+    }
+}
+
+pub struct DaemonState {
+    pub webviews: Vec<(String, WebView)>,
+    pub flags: PlaybackFlags,
+    pub wallpaper: String,
+    /// Current appearance (persisted in config.json).
+    pub colors: library::ColorSettings,
+    /// Saved color profiles (persisted in config.json).
+    pub profiles: Vec<library::Profile>,
+    /// Shared with the tray so its menu can mark the active wallpaper.
+    pub current: Option<Arc<std::sync::Mutex<String>>>,
+    /// Shared with the tray: saved profile names for its submenu.
+    pub profiles_ui: Option<Arc<std::sync::Mutex<Vec<String>>>>,
+    #[allow(clippy::type_complexity)]
+    pub tray: Option<ksni::blocking::Handle<ParticleWallTray>>,
+}
+
+impl DaemonState {
+    /// JS snippet applying the current appearance through the shared
+    /// wallpaper contract. None when nothing is set.
+    pub fn colors_js(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(b) = self.colors.background {
+            parts.push(format!("backgroundColor:{b}"));
+        }
+        if let Some(p) = self.colors.particle {
+            parts.push(format!("particleColor:{p}"));
+        }
+        if let Some(s) = self.colors.size {
+            let s = s.clamp(0.1, 10.0);
+            parts.push(format!("particleSize:{s}"));
+        }
+        if parts.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "window.__pwApplySettings && window.__pwApplySettings({{{}}});",
+            parts.join(",")
+        ))
+    }
+
+    fn push_colors(&self) {
+        let mut parts = Vec::new();
+        if let Some(b) = self.colors.background {
+            parts.push(format!("backgroundColor:{b}"));
+        }
+        if let Some(p) = self.colors.particle {
+            parts.push(format!("particleColor:{p}"));
+        }
+        if let Some(s) = self.colors.size {
+            let s = s.clamp(0.1, 10.0);
+            parts.push(format!("particleSize:{s}"));
+        }
+        if parts.is_empty() {
+            return;
+        }
+        let js = format!(
+            "window.__pwApplySettings && window.__pwApplySettings({{{}}});",
+            parts.join(",")
+        );
+        for (_, wv) in &self.webviews {
+            wv.evaluate_javascript(&js, None, None, None::<&gtk4::gio::Cancellable>, |_| {});
+        }
+    }
+
+    fn status_reply(&self, outputs: usize) -> String {
+        let body = serde_json::json!({
+            "paused": self.flags.paused.load(Ordering::Relaxed),
+            "fpsCap": self.flags.fps_cap.load(Ordering::Relaxed),
+            "outputs": outputs,
+            "wallpaper": self.wallpaper,
+            "colors": self.colors,
+            "profiles": self.profiles,
+        });
+        format!("{body}\n")
+    }
+
+    fn persist(&self) {
+        library::save_config(&library::Config {
+            wallpaper: Some(self.wallpaper.clone()),
+            colors: self.colors.clone(),
+            profiles: self.profiles.clone(),
+        });
+    }
+
+    fn set_paused(&mut self, paused: bool) -> String {
+        self.flags.paused.store(paused, Ordering::Relaxed);
+        let js = format!("window.__pwPaused = {paused}");
+        for (_, wv) in &self.webviews {
+            // Fire-and-forget; errors are non-fatal (e.g. mid-load).
+            wv.evaluate_javascript(&js, None, None, None::<&gtk4::gio::Cancellable>, |_| {});
+        }
+        if paused {
+            "ok\n".into()
+        } else {
+            "ok\n".into()
+        }
+    }
+
+    fn set_fps(&mut self, fps: u32) {
+        self.flags.fps_cap.store(fps, Ordering::Relaxed);
+        let js = format!("window.__pwFPSCap = {fps}");
+        for (_, wv) in &self.webviews {
+            wv.evaluate_javascript(&js, None, None, None::<&gtk4::gio::Cancellable>, |_| {});
+        }
+    }
+
+    /// Applies a command; returns the text reply for socket clients.
+    fn apply(&mut self, cmd: &Command) -> String {
+        match cmd {
+            Command::Pause => self.set_paused(true),
+            Command::Resume => self.set_paused(false),
+            Command::TogglePause => {
+                let p = !self.flags.paused.load(Ordering::Relaxed);
+                self.set_paused(p)
+            }
+            Command::Fps(fps) => {
+                self.set_fps(*fps);
+                "ok\n".into()
+            }
+            Command::Apply(id) => {
+                match crate::web::library::find(id) {
+                    Some(wp) => {
+                        let uri = format!("file://{}", wp.index.display());
+                        for (_, wv) in &self.webviews {
+                            wv.load_uri(&uri);
+                        }
+                        self.wallpaper = wp.id.clone();
+                        if let Some(current) = &self.current {
+                            *current.lock().unwrap() = wp.id.clone();
+                        }
+                        // New document: re-apply the saved appearance once
+                        // the appearance bridge is installed.
+                        self.push_colors();
+                        self.persist();
+                        format!("{{\"applied\":\"{}\"}}\n", wp.name)
+                    }
+                    None => return format!("{{\"error\":\"unknown wallpaper '{id}'\"}}\n"),
+                }
+            }
+            Command::SetColors(new_colors) => {
+                if new_colors.background.is_some() {
+                    self.colors.background = new_colors.background;
+                }
+                if new_colors.particle.is_some() {
+                    self.colors.particle = new_colors.particle;
+                }
+                if new_colors.size.is_some() {
+                    self.colors.size = new_colors.size;
+                }
+                self.push_colors();
+                self.persist();
+                format!("{{\"colors\":{}}}\n", serde_json::to_string(&self.colors).unwrap())
+            }
+            Command::SaveProfile(name) => {
+                let (Some(bg), Some(particle)) = (self.colors.background, self.colors.particle) else {
+                    return "{\"error\":\"set both background and particle colors first\"}\n".into();
+                };
+                let profile = library::Profile { name: name.clone(), background: bg, particle };
+                self.profiles.retain(|p| p.name != *name);
+                self.profiles.insert(0, profile);
+                {
+                    let mut list = self.profiles_ui.as_ref().expect("profiles_ui set").lock().unwrap();
+                    list.retain(|n| *n != *name);
+                    list.insert(0, name.clone());
+                }
+                self.persist();
+                format!("{{\"saved\":\"{name}\"}}\n")
+            }
+            Command::DeleteProfile(name) => {
+                let before = self.profiles.len();
+                self.profiles.retain(|p| p.name != *name);
+                if let Some(ui) = &self.profiles_ui { ui.lock().unwrap().retain(|n| *n != *name); }
+                self.persist();
+                format!("{{\"deleted\":{}}}\n", before != self.profiles.len())
+            }
+            Command::ApplyProfile(name) => {
+                match self.profiles.iter().find(|p| p.name == *name).cloned() {
+                    Some(profile) => {
+                        self.colors.background = Some(profile.background);
+                        self.colors.particle = Some(profile.particle);
+                        self.push_colors();
+                        format!("{{\"profile-applied\":\"{name}\"}}\n")
+                    }
+                    None => format!("{{\"error\":\"unknown profile '{name}'\"}}\n"),
+                }
+            }
+            Command::Status => self.status_reply(self.webviews.len()),
+            Command::Quit => String::new(),
+        }
+    }
+}
+
+type SharedState = Rc<RefCell<DaemonState>>;
+pub type CmdTx = async_channel::Sender<(Option<UnixStream>, Command)>;
+
+/// Starts the applier task on the GTK main thread plus the socket listener
+/// thread. The caller keeps a clone of `tx` for internal command sources
+/// (e.g. the system tray menu).
+pub fn start(
+    state: SharedState,
+    app: gtk4::Application,
+    tx: CmdTx,
+    rx: async_channel::Receiver<(Option<UnixStream>, Command)>,
+) -> std::io::Result<()> {
+    let path = socket_path();
+    let _ = std::fs::remove_file(&path);
+    let listener = UnixListener::bind(&path)?;
+    println!("pw: control socket at {}", path.display());
+
+    // Tray menu items push internal commands through this sender.
+    glib::spawn_future_local(async move {
+        while let Ok((stream, cmd)) = rx.recv().await {
+            if cmd == Command::Quit {
+                let _ = std::fs::remove_file(socket_path());
+                app.quit();
+                break;
+            }
+            let reply = {
+                let mut st = state.borrow_mut();
+                let reply = st.apply(&cmd);
+                // Refresh tray icon/title after any playback change.
+                if let Some(handle) = &st.tray {
+                    handle.update(|_| {});
+                }
+                reply
+            };
+            if let Some(mut stream) = stream {
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        }
+    });
+
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(match stream.try_clone() {
+                Ok(s) => s,
+                Err(_) => continue,
+            });
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() || line.is_empty() {
+                continue;
+            }
+            let Some(cmd) = Command::parse(&line) else {
+                let _ =
+                    writeln!(stream.try_clone().unwrap(), "{{\"error\":\"bad command\"}}");
+                continue;
+            };
+            if tx.send_blocking((Some(stream), cmd)).is_err() {
+                break; // applier gone (daemon quitting)
+            }
+        }
+        drop(tx);
+    });
+
+    Ok(())
+}
