@@ -49,7 +49,7 @@
     const ratio = Math.min(window.devicePixelRatio || 1, 1.5);
     canvas.width = Math.max(1, Math.round(innerWidth * ratio));
     canvas.height = Math.max(1, Math.round(innerHeight * ratio));
-    context.fillStyle = '#000';
+    context.fillStyle = window.__pwBackgroundColor || '#000';
     context.fillRect(0, 0, canvas.width, canvas.height);
   }
 
@@ -59,7 +59,7 @@
     time += 1;
 
     context.filter = 'none';
-    context.fillStyle = 'rgba(0,0,0,0.03)';
+    context.fillStyle = window.__pwTrailColor || 'rgba(0,0,0,0.03)';
     context.fillRect(0, 0, canvas.width, canvas.height);
     context.filter = 'blur(0.8px)';
 
@@ -86,6 +86,40 @@
   addEventListener('resize', resize);
   resize();
   requestAnimationFrame(draw);
+</script>
+<script>
+  (function () {
+    if (window.__pwAppearanceBridge) return;
+    window.__pwAppearanceBridge = true;
+
+    var DEFAULT_BG = 0x000000;
+    var TRAIL_ALPHA = 0.03;
+
+    var controls = [
+      { id: 'backgroundColor', label: 'Color del fondo', category: 'Apariencia', min: 0, max: 16777215, step: 1, defaultValue: DEFAULT_BG, kind: 'color' }
+    ];
+
+    function hex(value) {
+      value = Math.max(0, Math.min(16777215, Math.round(Number(value) || 0)));
+      return '#' + ('00000' + value.toString(16)).slice(-6);
+    }
+    function rgba(value, alpha) {
+      value = Math.max(0, Math.min(16777215, Math.round(Number(value) || 0)));
+      return 'rgba(' + ((value >> 16) & 255) + ',' + ((value >> 8) & 255) + ',' + (value & 255) + ',' + alpha + ')';
+    }
+
+    window.__pwBackgroundColor = hex(DEFAULT_BG);
+    window.__pwTrailColor = rgba(DEFAULT_BG, TRAIL_ALPHA);
+
+    window.__pwGetControls = function () { return controls; };
+    window.__pwApplySettings = function (settings) {
+      if (!settings || typeof settings !== 'object') return;
+      if (settings.backgroundColor !== undefined) {
+        window.__pwBackgroundColor = hex(settings.backgroundColor);
+        window.__pwTrailColor = rgba(settings.backgroundColor, TRAIL_ALPHA);
+      }
+    };
+  })();
 </script>
 </body>
 </html>

@@ -70,6 +70,69 @@
     renderer.render(scene, camera);
   }
   requestAnimationFrame(pwLoop);
+
+  // === ParticleWall appearance/transform bridge ===
+  (function () {
+    if (window.__pwAppearanceBridge) return;
+    window.__pwAppearanceBridge = true;
+
+    var baseSize = (material && typeof material.size === 'number') ? material.size : 1;
+    var baseOpacity = (material && typeof material.opacity === 'number') ? material.opacity : 1;
+    var clearHex = 0x000000;
+    try { clearHex = renderer.getClearColor().getHex(); } catch (e) {}
+    var particleHex = 0x00ff88;
+    try { particleHex = material && material.color ? material.color.getHex() : 0x00ff88; } catch (e) {}
+
+    var controls = [
+      { id: 'backgroundColor', label: 'Color del fondo', category: 'Apariencia', min: 0, max: 16777215, step: 1, defaultValue: clearHex, kind: 'color' },
+      { id: 'particleColor', label: 'Color de partículas', category: 'Apariencia', min: 0, max: 16777215, step: 1, defaultValue: particleHex, kind: 'color' },
+      { id: 'particleSize', label: 'Tamaño', category: 'Apariencia', min: 0.1, max: 10, step: 0.05, defaultValue: 1 },
+      { id: 'brightness', label: 'Intensidad de puntos', category: 'Apariencia', min: 0.25, max: 10, step: 0.05, defaultValue: 1 },
+      { id: 'positionX', label: 'Posición X', category: 'Transformación', min: -100, max: 100, step: 0.5, defaultValue: 0 },
+      { id: 'positionY', label: 'Posición Y', category: 'Transformación', min: -100, max: 100, step: 0.5, defaultValue: 0 },
+      { id: 'positionZ', label: 'Posición Z', category: 'Transformación', min: -100, max: 100, step: 0.5, defaultValue: 0 },
+      { id: 'rotationX', label: 'Rotación X', category: 'Transformación', min: -180, max: 180, step: 1, defaultValue: 0 },
+      { id: 'rotationY', label: 'Rotación Y', category: 'Transformación', min: -180, max: 180, step: 1, defaultValue: 0 },
+      { id: 'rotationZ', label: 'Rotación Z', category: 'Transformación', min: -180, max: 180, step: 1, defaultValue: 0 },
+      { id: 'scale', label: 'Escala', category: 'Transformación', min: 0.1, max: 4, step: 0.05, defaultValue: 1 }
+    ];
+
+    function num(settings, key) {
+      var value = Number(settings[key]);
+      return isFinite(value) ? value : null;
+    }
+
+    window.__pwGetControls = function () { return controls; };
+    window.__pwApplySettings = function (settings) {
+      if (!settings || typeof settings !== 'object') return;
+      var value = num(settings, 'backgroundColor');
+      if (value !== null && renderer) renderer.setClearColor(new THREE.Color(value), 1);
+      value = num(settings, 'particleColor');
+      if (value !== null && material) material.color = new THREE.Color(value);
+      value = num(settings, 'particleSize');
+      if (value !== null && material && typeof material.size === 'number') {
+        material.size = Math.max(0.01, baseSize * value);
+      }
+      value = num(settings, 'brightness');
+      if (value !== null && material && typeof material.opacity === 'number') {
+        material.opacity = Math.max(0, Math.min(1, baseOpacity * value));
+      }
+      value = num(settings, 'positionX');
+      if (value !== null && particles && particles.position) particles.position.x = value;
+      value = num(settings, 'positionY');
+      if (value !== null && particles && particles.position) particles.position.y = value;
+      value = num(settings, 'positionZ');
+      if (value !== null && particles && particles.position) particles.position.z = value;
+      value = num(settings, 'rotationX');
+      if (value !== null && particles && particles.rotation) particles.rotation.x = value * Math.PI / 180;
+      value = num(settings, 'rotationY');
+      if (value !== null && particles && particles.rotation) particles.rotation.y = value * Math.PI / 180;
+      value = num(settings, 'rotationZ');
+      if (value !== null && particles && particles.rotation) particles.rotation.z = value * Math.PI / 180;
+      value = num(settings, 'scale');
+      if (value !== null && particles && particles.scale) particles.scale.setScalar(Math.max(0.01, value));
+    };
+  })();
 </script>
 </body>
 </html>

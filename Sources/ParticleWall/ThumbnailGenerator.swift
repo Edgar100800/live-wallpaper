@@ -8,6 +8,7 @@ final class ThumbnailGenerator {
 
     private struct Job {
         let wallpaper: Wallpaper
+        let controlValues: [String: Double]?
         let completion: () -> Void
     }
 
@@ -23,9 +24,13 @@ final class ThumbnailGenerator {
 
     private init() {}
 
-    func generate(for wallpaper: Wallpaper, completion: @escaping () -> Void = {}) {
+    func generate(for wallpaper: Wallpaper,
+                  controlValues: [String: Double]? = nil,
+                  completion: @escaping () -> Void = {}) {
         DispatchQueue.main.async {
-            self.queue.append(Job(wallpaper: wallpaper, completion: completion))
+            self.queue.append(Job(wallpaper: wallpaper,
+                                  controlValues: controlValues,
+                                  completion: completion))
             self.runNextIfIdle()
         }
     }
@@ -61,7 +66,24 @@ final class ThumbnailGenerator {
         self.webView = webView
         self.navigationDelegate = delegate
 
-        webView.loadFileURL(job.wallpaper.indexURL, allowingReadAccessTo: job.wallpaper.folderURL)
+        if let controlValues = job.controlValues,
+           JSONSerialization.isValidJSONObject(controlValues),
+           let data = try? JSONSerialization.data(withJSONObject: controlValues,
+                                                  options: [.sortedKeys]),
+           let json = String(data: data, encoding: .utf8) {
+            let apply: () -> Void = { [weak webView] in
+                webView?.evaluateJavaScript(
+                    "window.__pwApplySettings && window.__pwApplySettings(\(json));",
+                    completionHandler: nil
+                )
+            }
+            delegate.onDidFinish = apply
+            webView.loadFileURL(job.wallpaper.indexURL, allowingReadAccessTo: job.wallpaper.folderURL)
+            // ES-module bridges install asynchronously; retry shortly after load.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { apply() }
+        } else {
+            webView.loadFileURL(job.wallpaper.indexURL, allowingReadAccessTo: job.wallpaper.folderURL)
+        }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
             self?.snapshot(job: job)

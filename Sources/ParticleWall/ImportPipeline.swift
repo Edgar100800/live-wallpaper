@@ -296,7 +296,7 @@ final class ImportPipeline {
             typeof pass.radius === 'number' && typeof pass.threshold === 'number')
         : null);
       const controls = [];
-      const add = (id, label, category, min, max, step, defaultValue) => {
+      const add = (id, label, category, min, max, step, defaultValue, kind) => {
         const numericMin = Number(min);
         const numericMax = Number(max);
         const numericStep = Number(step);
@@ -311,7 +311,8 @@ final class ImportPipeline {
           min: numericMin,
           max: numericMax,
           step: numericStep,
-          defaultValue: Math.max(numericMin, Math.min(numericMax, numericDefault))
+          defaultValue: Math.max(numericMin, Math.min(numericMax, numericDefault)),
+          kind: kind || undefined
         });
       };
 
@@ -353,6 +354,39 @@ final class ImportPipeline {
               inst.__pwParams && Number.isFinite(Number(inst.__pwParams[item.parameterID || item.id]))
                 ? Number(inst.__pwParams[item.parameterID || item.id])
                 : item.defaultValue);
+        }
+      }
+
+      // Appearance: drive a three.js renderer + material when the export exposes
+      // one. Mirrors the Metal wallpaper controls (background/particle color,
+      // particle size) so web wallpapers are customizable the same way.
+      const appearance = (function () {
+        const material = root && (root.material
+          || (Array.isArray(root.materials) && root.materials.length ? root.materials[0] : null));
+        const threeRenderer = inst.renderer
+          || (inst.composer && inst.composer.renderer)
+          || null;
+        if (!material && !threeRenderer) return null;
+        return { material, threeRenderer };
+      })();
+      if (appearance) {
+        if (appearance.material && appearance.material.color) {
+          add('particleColor', 'Color de partículas', 'Apariencia', 0, 16777215, 1,
+              appearance.material.color.getHex(), 'color');
+        }
+        if (appearance.material && typeof appearance.material.size === 'number') {
+          appearance.baseSize = appearance.material.size;
+          add('particleSize', 'Tamaño', 'Apariencia', 0.1, 10, 0.05, 1);
+        }
+        if (appearance.material && typeof appearance.material.opacity === 'number') {
+          appearance.baseOpacity = appearance.material.opacity;
+          add('brightness', 'Intensidad de puntos', 'Apariencia', 0.25, 10, 0.05, 1);
+        }
+        if (appearance.threeRenderer
+            && typeof appearance.threeRenderer.getClearColor === 'function') {
+          let clearHex = 0x000000;
+          try { clearHex = appearance.threeRenderer.getClearColor().getHex(); } catch (e) {}
+          add('backgroundColor', 'Color del fondo', 'Apariencia', 0, 16777215, 1, clearHex, 'color');
         }
       }
 
@@ -403,6 +437,29 @@ final class ImportPipeline {
           for (const item of __pwGeneratedControls) {
             const value = number(item.id);
             if (value !== null) inst.__pwParams[item.parameterID || item.id] = value;
+          }
+        }
+        if (appearance) {
+          const bg = number('backgroundColor');
+          if (bg !== null && appearance.threeRenderer
+              && typeof appearance.threeRenderer.setClearColor === 'function') {
+            appearance.threeRenderer.setClearColor(bg, 1);
+          }
+          const pc = number('particleColor');
+          if (pc !== null && appearance.material && appearance.material.color) {
+            appearance.material.color.setHex(pc);
+          }
+          const ps = number('particleSize');
+          if (ps !== null && appearance.material
+              && typeof appearance.material.size === 'number') {
+            appearance.material.size = Math.max(0.01,
+                (appearance.baseSize || 1) * ps);
+          }
+          const br = number('brightness');
+          if (br !== null && appearance.material
+              && typeof appearance.material.opacity === 'number') {
+            appearance.material.opacity = Math.max(0, Math.min(1,
+                (appearance.baseOpacity || 1) * br));
           }
         }
         window.__pwControlValues = Object.assign({}, window.__pwControlValues || {}, settings);

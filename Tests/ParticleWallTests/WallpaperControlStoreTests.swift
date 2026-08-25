@@ -228,6 +228,26 @@ final class WallpaperControlStoreTests: XCTestCase {
         XCTAssertTrue(bootstrap.contains(#""parameterID":"scale""#))
     }
 
+    func testModuleBootstrapAddsAppearanceColorControls() {
+        let bootstrap = ImportPipeline.moduleBootstrap(for: """
+        export default class Demo {
+          constructor() {
+            this.renderer = null;
+            this.mesh = null;
+          }
+        }
+        """)
+
+        // The bridge detects a three.js renderer/material and advertises the
+        // same background/particle appearance controls the Metal models have.
+        XCTAssertTrue(bootstrap.contains("kind: kind || undefined"))
+        XCTAssertTrue(bootstrap.contains("'color'"))
+        XCTAssertTrue(bootstrap.contains("particleColor"))
+        XCTAssertTrue(bootstrap.contains("backgroundColor"))
+        XCTAssertTrue(bootstrap.contains("getClearColor"))
+        XCTAssertTrue(bootstrap.contains("setHex(pc)"))
+    }
+
     func testGeneratedControlsAreExtractedAndTyped() {
         let code = """
         const size = addControl("size", "Block Size", 0.5, 10, 2.5);

@@ -25,13 +25,13 @@
     requestAnimationFrame(draw);
     if (window.__pwPaused) return;
     time += Math.PI / 45;
-    context.fillStyle = '#030609';
+    context.fillStyle = window.__pwBackgroundColor || '#030609';
     context.fillRect(0, 0, canvas.width, canvas.height);
-    context.fillStyle = 'rgba(232,255,255,0.57)';
+    context.fillStyle = window.__pwParticleColor || 'rgba(232,255,255,0.57)';
     const fit = Math.min(canvas.width, canvas.height) / 400;
     const offsetX = (canvas.width - 400 * fit) / 2;
     const offsetY = (canvas.height - 400 * fit) / 2;
-    const size = Math.max(1.25, fit * 1.1);
+    const size = Math.max(1.25, fit * 1.1) * (window.__pwParticleSizeScale || 1);
 
     for (let i = 29999; i >= 0; i--) {
       const m = (i % 2) * 3;
@@ -50,6 +50,45 @@
   addEventListener('resize', resize);
   resize();
   requestAnimationFrame(draw);
+</script>
+<script>
+  (function () {
+    if (window.__pwAppearanceBridge) return;
+    window.__pwAppearanceBridge = true;
+
+    var DEFAULT_BG = 0x030609;
+    var DEFAULT_PARTICLE = 0xe8ffff;
+    var PARTICLE_ALPHA = 0.57;
+
+    var controls = [
+      { id: 'backgroundColor', label: 'Color del fondo', category: 'Apariencia', min: 0, max: 16777215, step: 1, defaultValue: DEFAULT_BG, kind: 'color' },
+      { id: 'particleColor', label: 'Color de partículas', category: 'Apariencia', min: 0, max: 16777215, step: 1, defaultValue: DEFAULT_PARTICLE, kind: 'color' },
+      { id: 'particleSize', label: 'Tamaño', category: 'Apariencia', min: 0.25, max: 4, step: 0.05, defaultValue: 1 }
+    ];
+
+    function hex(value) {
+      value = Math.max(0, Math.min(16777215, Math.round(Number(value) || 0)));
+      return '#' + ('00000' + value.toString(16)).slice(-6);
+    }
+    function rgba(value, alpha) {
+      value = Math.max(0, Math.min(16777215, Math.round(Number(value) || 0)));
+      return 'rgba(' + ((value >> 16) & 255) + ',' + ((value >> 8) & 255) + ',' + (value & 255) + ',' + alpha + ')';
+    }
+
+    window.__pwBackgroundColor = hex(DEFAULT_BG);
+    window.__pwParticleColor = rgba(DEFAULT_PARTICLE, PARTICLE_ALPHA);
+    window.__pwParticleColorHex = hex(DEFAULT_PARTICLE);
+    window.__pwParticleSizeScale = 1;
+
+    window.__pwGetControls = function () { return controls; };
+    window.__pwApplySettings = function (settings) {
+      if (!settings || typeof settings !== 'object') return;
+      if (settings.backgroundColor !== undefined) window.__pwBackgroundColor = hex(settings.backgroundColor);
+      if (settings.particleColor !== undefined) window.__pwParticleColor = rgba(settings.particleColor, PARTICLE_ALPHA);
+      if (settings.particleColor !== undefined) window.__pwParticleColorHex = hex(settings.particleColor);
+      if (settings.particleSize !== undefined) window.__pwParticleSizeScale = Math.max(0.1, Number(settings.particleSize) || 1);
+    };
+  })();
 </script>
 </body>
 </html>

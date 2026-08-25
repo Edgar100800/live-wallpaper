@@ -334,6 +334,12 @@ struct WallpaperCustomizationView: View {
         values[id] = value
         hasUnsavedChanges = true
         manager.previewControlValues(values, for: wallpaper.id, target: target)
+        // Colors persist immediately so newly created windows, gallery re-applies
+        // and the system desktop picture always see the latest background.
+        if let descriptor = descriptors.first(where: { $0.id == id }),
+           descriptor.resolvedKind == .color {
+            persistValues()
+        }
     }
 
     private var targetDescription: String {
@@ -409,6 +415,7 @@ struct WallpaperCustomizationView: View {
         values["particleColor"] = profile.particleColor
         hasUnsavedChanges = true
         manager.previewControlValues(values, for: wallpaper.id, target: target)
+        persistValues()
         statusMessage = "\(profile.name) aplicado"
     }
 
