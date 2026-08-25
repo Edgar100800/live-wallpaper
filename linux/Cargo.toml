@@ -1,0 +1,3 @@
+[workspace]
+resolver = "2"
+members = ["crates/particlewall-contracts", "crates/particlewall-linux"]
