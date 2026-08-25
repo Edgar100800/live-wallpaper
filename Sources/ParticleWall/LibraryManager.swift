@@ -226,7 +226,9 @@ final class LibraryManager: ObservableObject {
     }
 
     func regenerateThumbnail(_ wallpaper: Wallpaper) {
-        ThumbnailGenerator.shared.generate(for: wallpaper) { [weak self] in
+        let values = WallpaperManager.shared.controlValues(for: wallpaper.id, target: .allScreens)
+        ThumbnailGenerator.shared.generate(for: wallpaper,
+                                           controlValues: values.isEmpty ? nil : values) { [weak self] in
             self?.loadLibrary()
             WallpaperManager.shared.refreshSystemWallpaper(for: wallpaper.id)
         }

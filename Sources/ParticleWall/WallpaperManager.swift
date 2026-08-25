@@ -12,6 +12,10 @@ final class WallpaperManager {
     private var snapshotTimer: Timer?
     private var snapshotCaptureTokens: [String: UUID] = [:]
     private var persistedSnapshotKeys: Set<LastFrameStore.Key> = []
+    /// Coalesces desktop-picture refreshes during live color edits so macOS
+    /// Space transitions / menu-bar tint settle on the latest background once.
+    private var desktopResyncWorkItem: DispatchWorkItem?
+    private let desktopResyncDelay: TimeInterval = 0.8
 
     private init() {}
 
@@ -103,7 +107,12 @@ final class WallpaperManager {
         case .allScreens:
             for (uuid, controller) in controllers {
                 load(wallpaper, into: controller)
-                syncSystemWallpaper(for: uuid)
+                syncSystemWallpaper(for: uuid, wallpaperID: wallpaper.id)
+            }
+            // Displays the app cannot host a wallpaper window on still need
+            // their system picture updated, or they keep the old static color.
+            for entry in screensByUUID where controllers[entry.uuid] == nil {
+                syncSystemWallpaper(for: entry.uuid, wallpaperID: wallpaper.id)
             }
             defaults.set(wallpaper.id.uuidString, forKey: DefaultsKey.defaultWallpaper)
             var map = assignmentMap()
@@ -120,6 +129,11 @@ final class WallpaperManager {
         // load() wakes deep-asleep controllers; re-assert Power Save if active.
         PowerManager.shared.pushStateToAllControllers()
         NotificationCenter.default.post(name: .pwPlaybackStateChanged, object: nil)
+
+        // The system wallpaper (menu-bar tint, Space transitions, Mission
+        // Control) must not keep the previous static color: once the new
+        // renderer paints, point it at a fresh capture of the applied wallpaper.
+        scheduleDesktopResync(for: wallpaper.id, target: target)
     }
 
     private func load(_ wallpaper: Wallpaper, into controller: WallpaperWindowController) {
@@ -137,12 +151,21 @@ final class WallpaperManager {
 
     /// The macOS menu bar (and Space transitions) derive their tint from the
     /// SYSTEM desktop picture, not from our desktop-level window. Point it at
-    /// the active wallpaper's thumbnail so no stale colors bleed through.
-    private func syncSystemWallpaper(for displayUUID: String) {
-        guard let controller = controllers[displayUUID],
-              let entry = screensByUUID.first(where: { $0.uuid == displayUUID }),
-              let id = controller.currentWallpaperID,
+    /// the active wallpaper's most recent frame so no stale colors bleed
+    /// through. `wallpaperID` lets us sync displays the app has no controller
+    /// for (no wallpaper window) — their static picture must still follow the
+    /// applied wallpaper.
+    private func syncSystemWallpaper(for displayUUID: String, wallpaperID: UUID? = nil) {
+        guard let entry = screensByUUID.first(where: { $0.uuid == displayUUID }),
+              let id = wallpaperID ?? controllers[displayUUID]?.currentWallpaperID,
               let wallpaper = LibraryManager.shared.wallpaper(id: id) else { return }
+        // A solid rendition of the wallpaper's palette drives the menu-bar tint:
+        // a captured frame has particles/animations at its top, which would tint
+        // the bar with something other than the background color.
+        if let colorURL = systemColorImageURL(for: id, displayUUID: displayUUID) {
+            setSystemWallpaper(colorURL, for: entry.screen)
+            return
+        }
         let persisted = lastFrames.persistedURL(displayUUID: displayUUID, wallpaperID: id)
         let imageURL: URL
         if FileManager.default.fileExists(atPath: persisted.path) {
@@ -155,6 +178,21 @@ final class WallpaperManager {
             return
         }
         setSystemWallpaper(imageURL, for: entry.screen)
+    }
+
+    /// Writes a small PNG of the wallpaper's background color (+ particle glow)
+    /// so the system desktop picture — and therefore the menu bar it tints —
+    /// matches the on-screen background.
+    private func systemColorImageURL(for wallpaperID: UUID, displayUUID: String) -> URL? {
+        let values = controlValues(for: wallpaperID, target: .screen(displayUUID: displayUUID))
+        guard let image = WallpaperWindowController.colorGlowImage(from: values) else { return nil }
+        let url = LibraryManager.shared.rootURL
+            .appendingPathComponent("color-\(displayUUID)-\(wallpaperID.uuidString).png")
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return nil }
+        try? png.write(to: url, options: .atomic)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
     private func setSystemWallpaper(_ imageURL: URL, for screen: NSScreen) {
@@ -257,6 +295,76 @@ final class WallpaperManager {
             }
         }
         previewControlValues(values, for: wallpaperID, target: target)
+        scheduleDesktopResync(for: wallpaperID, target: target)
+    }
+
+    // MARK: - Desktop picture refresh (Space transitions / menu-bar tint)
+
+    private func scheduleDesktopResync(for wallpaperID: UUID, target: ScreenTarget) {
+        desktopResyncWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.resyncDesktopWallpaper(for: wallpaperID, target: target)
+            // Keep the gallery card in sync with the latest saved palette.
+            self?.refreshGalleryThumbnail(for: wallpaperID)
+        }
+        desktopResyncWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + desktopResyncDelay,
+                                      execute: workItem)
+    }
+
+    private func refreshGalleryThumbnail(for wallpaperID: UUID) {
+        guard let wallpaper = LibraryManager.shared.wallpaper(id: wallpaperID) else { return }
+        LibraryManager.shared.regenerateThumbnail(wallpaper)
+    }
+
+    private func resyncDesktopWallpaper(for wallpaperID: UUID, target: ScreenTarget) {
+        switch target {
+        case .screen(let displayUUID):
+            resyncDisplay(displayUUID, wallpaperID: wallpaperID)
+        case .allScreens:
+            for (displayUUID, controller) in controllers
+                where controller.currentWallpaperID == wallpaperID {
+                resyncDisplay(displayUUID, wallpaperID: wallpaperID)
+            }
+        }
+    }
+
+    private func resyncDisplay(_ displayUUID: String, wallpaperID: UUID) {
+        guard let controller = controllers[displayUUID],
+              controller.currentWallpaperID == wallpaperID else { return }
+
+        // Power Save keeps the renderer torn down, so there is no live frame to
+        // capture. Push a solid rendition of the current background instead.
+        if controller.isDeepAsleep {
+            let values = controlValues(for: wallpaperID,
+                                       target: .screen(displayUUID: displayUUID))
+            if let image = controller.refreshFrozenBackground(from: values) {
+                lastFrames.cache(image,
+                                 displayUUID: displayUUID,
+                                 wallpaperID: wallpaperID)
+                _ = lastFrames.persist(image,
+                                       displayUUID: displayUUID,
+                                       wallpaperID: wallpaperID,
+                                       targetPixelSize: controller.snapshotPixelSize)
+            }
+            syncSystemWallpaper(for: displayUUID)
+            return
+        }
+
+        controller.captureSnapshot { [weak self, weak controller] image in
+            guard let self, let controller,
+                  controller.currentWallpaperID == wallpaperID else { return }
+            if let image {
+                self.lastFrames.cache(image,
+                                      displayUUID: displayUUID,
+                                      wallpaperID: wallpaperID)
+                _ = self.lastFrames.persist(image,
+                                            displayUUID: displayUUID,
+                                            wallpaperID: wallpaperID,
+                                            targetPixelSize: controller.snapshotPixelSize)
+            }
+            self.syncSystemWallpaper(for: displayUUID)
+        }
     }
 
     /// Restores the renderer's declared defaults. For one display, keep an

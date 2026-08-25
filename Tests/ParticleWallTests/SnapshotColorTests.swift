@@ -87,6 +87,60 @@ final class SnapshotColorTests: XCTestCase {
         XCTAssertGreaterThan(particlePixels, 0)
     }
 
+    func testDeepSleepFrozenBackgroundTracksColorChange() throws {
+        guard let screen = NSScreen.main else {
+            throw XCTSkip("requires a connected display")
+        }
+        let controller = WallpaperWindowController(screen: screen,
+                                                   displayUUID: "test-sleep-display")
+        defer { controller.clear() }
+
+        controller.enterDeepSleep(preservingFrame: false)
+        XCTAssertTrue(controller.isDeepAsleep)
+
+        let image = controller.refreshFrozenBackground(
+            from: ["backgroundColor": Double(0x0060C3)]
+        )
+        let representation = try persistAndLoad(
+            try XCTUnwrap(image),
+            size: CGSize(width: 128, height: 128)
+        )
+        var values = [Int](repeating: 0, count: 4)
+        representation.getPixel(&values, atX: 0, y: 0)
+        XCTAssertEqual(values[0], 0x00, accuracy: 2)
+        XCTAssertEqual(values[1], 0x60, accuracy: 2)
+        XCTAssertEqual(values[2], 0xC3, accuracy: 2)
+        XCTAssertEqual(values[3], 255, accuracy: 1)
+
+        XCTAssertNil(controller.refreshFrozenBackground(from: [:]))
+    }
+
+    func testDeepSleepFrozenBackgroundIncludesParticleGlow() throws {
+        guard let screen = NSScreen.main else {
+            throw XCTSkip("requires a connected display")
+        }
+        let controller = WallpaperWindowController(screen: screen,
+                                                   displayUUID: "test-sleep-display")
+        defer { controller.clear() }
+
+        controller.enterDeepSleep(preservingFrame: false)
+        XCTAssertTrue(controller.isDeepAsleep)
+
+        let image = controller.refreshFrozenBackground(
+            from: ["particleColor": Double(0xFAFF00)]
+        )
+        let representation = try persistAndLoad(
+            try XCTUnwrap(image),
+            size: CGSize(width: 128, height: 128)
+        )
+        var values = [Int](repeating: 0, count: 4)
+        representation.getPixel(&values, atX: 64, y: 64)
+        // The glow center blends the particle color (90% alpha) over black.
+        XCTAssertGreaterThan(values[0], 180)
+        XCTAssertGreaterThan(values[1], 200)
+        XCTAssertLessThan(values[2], 40)
+    }
+
     private func makeWindow(frame: NSRect) -> NSWindow {
         let window = NSWindow(contentRect: frame,
                               styleMask: [.borderless],

@@ -94,7 +94,9 @@ final class WallpaperWindowController: NSObject {
         // Applying while asleep updates the pending wallpaper and frozen image,
         // but must not briefly respawn WebContent just to tear it down again.
         guard !isDeepAsleep else {
-            installSleepImage(fallbackSleepImage())
+            if refreshFrozenBackground(from: self.controlValues) == nil {
+                installSleepImage(fallbackSleepImage())
+            }
             return
         }
 
@@ -253,6 +255,62 @@ final class WallpaperWindowController: NSObject {
         controlValues = [:]
         removeSleepImage()
         tearDownRenderer()
+    }
+
+    /// While Power Save holds the renderer torn down, replaces the frozen frame
+    /// with a solid rendition of the current colors so a color change is
+    /// reflected immediately. Returns the generated image (for persistence).
+    @discardableResult
+    func refreshFrozenBackground(from values: [String: Double]) -> NSImage? {
+        guard isDeepAsleep, let image = Self.colorGlowImage(from: values) else { return nil }
+        installSleepImage(image)
+        return image
+    }
+
+    /// Builds a representative static image of a wallpaper's palette: a solid
+    /// background fill plus a soft glow in the particle color. Used for the
+    /// frozen background while asleep and for the system desktop picture, whose
+    /// top edge drives the macOS menu-bar tint.
+    static func colorGlowImage(from values: [String: Double],
+                               size: NSSize = NSSize(width: 1024, height: 576)) -> NSImage? {
+        let hasColors = values["backgroundColor"] != nil || values["particleColor"] != nil
+        guard hasColors else { return nil }
+
+        let image = NSImage(size: size)
+        image.lockFocus()
+        defer { image.unlockFocus() }
+
+        let backgroundColor: NSColor
+        if let packed = values["backgroundColor"] {
+            let c = PackedRGB.components(packed)
+            backgroundColor = NSColor(srgbRed: CGFloat(c.red),
+                                       green: CGFloat(c.green),
+                                       blue: CGFloat(c.blue),
+                                       alpha: 1)
+        } else {
+            backgroundColor = .black
+        }
+        backgroundColor.setFill()
+        NSRect(origin: .zero, size: size).fill()
+
+        if let packed = values["particleColor"] {
+            let c = PackedRGB.components(packed)
+            let particle = NSColor(srgbRed: CGFloat(c.red),
+                                   green: CGFloat(c.green),
+                                   blue: CGFloat(c.blue),
+                                   alpha: 0.9)
+            let glowRect = NSRect(x: size.width * 0.08,
+                                  y: size.height * 0.12,
+                                  width: size.width * 0.84,
+                                  height: size.height * 0.76)
+            if let gradient = NSGradient(colors: [particle,
+                                                  backgroundColor.withAlphaComponent(0)]) {
+                gradient.draw(in: NSBezierPath(ovalIn: glowRect),
+                              relativeCenterPosition: .zero)
+            }
+        }
+
+        return image
     }
 
     @objc private func occlusionChanged() {
