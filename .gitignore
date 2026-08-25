@@ -17,3 +17,6 @@ build/
 xcuserdata/
 *.xcuserstate
 .swiftpm/
+
+# Rust build artifacts (Linux port)
+linux/target/
