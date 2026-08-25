@@ -1,0 +1,245 @@
+{
+  "contractVersion": 1,
+  "cases": [
+    {
+      "name": "none-active",
+      "input": {
+        "userPaused": false,
+        "powerSave": false,
+        "systemUnavailable": false,
+        "batteryPause": false
+      },
+      "expected": {
+        "paused": false,
+        "deepSleep": false,
+        "preservingFrame": true,
+        "persistSnapshot": false
+      }
+    },
+    {
+      "name": "userPaused",
+      "input": {
+        "userPaused": true,
+        "powerSave": false,
+        "systemUnavailable": false,
+        "batteryPause": false
+      },
+      "expected": {
+        "paused": true,
+        "deepSleep": false,
+        "preservingFrame": true,
+        "persistSnapshot": false
+      }
+    },
+    {
+      "name": "powerSave",
+      "input": {
+        "userPaused": false,
+        "powerSave": true,
+        "systemUnavailable": false,
+        "batteryPause": false
+      },
+      "expected": {
+        "paused": true,
+        "deepSleep": true,
+        "preservingFrame": true,
+        "persistSnapshot": false
+      }
+    },
+    {
+      "name": "userPaused+powerSave",
+      "input": {
+        "userPaused": true,
+        "powerSave": true,
+        "systemUnavailable": false,
+        "batteryPause": false
+      },
+      "expected": {
+        "paused": true,
+        "deepSleep": true,
+        "preservingFrame": true,
+        "persistSnapshot": false
+      }
+    },
+    {
+      "name": "systemUnavailable",
+      "input": {
+        "userPaused": false,
+        "powerSave": false,
+        "systemUnavailable": true,
+        "batteryPause": false
+      },
+      "expected": {
+        "paused": true,
+        "deepSleep": true,
+        "preservingFrame": true,
+        "persistSnapshot": true
+      }
+    },
+    {
+      "name": "userPaused+systemUnavailable",
+      "input": {
+        "userPaused": true,
+        "powerSave": false,
+        "systemUnavailable": true,
+        "batteryPause": false
+      },
+      "expected": {
+        "paused": true,
+        "deepSleep": true,
+        "preservingFrame": true,
+        "persistSnapshot": true
+      }
+    },
+    {
+      "name": "powerSave+systemUnavailable",
+      "input": {
+        "userPaused": false,
+        "powerSave": true,
+        "systemUnavailable": true,
+        "batteryPause": false
+      },
+      "expected": {
+        "paused": true,
+        "deepSleep": true,
+        "preservingFrame": true,
+        "persistSnapshot": true
+      }
+    },
+    {
+      "name": "userPaused+powerSave+systemUnavailable",
+      "input": {
+        "userPaused": true,
+        "powerSave": true,
+        "systemUnavailable": true,
+        "batteryPause": false
+      },
+      "expected": {
+        "paused": true,
+        "deepSleep": true,
+        "preservingFrame": true,
+        "persistSnapshot": true
+      }
+    },
+    {
+      "name": "batteryPause",
+      "input": {
+        "userPaused": false,
+        "powerSave": false,
+        "systemUnavailable": false,
+        "batteryPause": true
+      },
+      "expected": {
+        "paused": true,
+        "deepSleep": true,
+        "preservingFrame": true,
+        "persistSnapshot": false
+      }
+    },
+    {
+      "name": "userPaused+batteryPause",
+      "input": {
+        "userPaused": true,
+        "powerSave": false,
+        "systemUnavailable": false,
+        "batteryPause": true
+      },
+      "expected": {
+        "paused": true,
+        "deepSleep": true,
+        "preservingFrame": true,
+        "persistSnapshot": false
+      }
+    },
+    {
+      "name": "powerSave+batteryPause",
+      "input": {
+        "userPaused": false,
+        "powerSave": true,
+        "systemUnavailable": false,
+        "batteryPause": true
+      },
+      "expected": {
+        "paused": true,
+        "deepSleep": true,
+        "preservingFrame": true,
+        "persistSnapshot": false
+      }
+    },
+    {
+      "name": "userPaused+powerSave+batteryPause",
+      "input": {
+        "userPaused": true,
+        "powerSave": true,
+        "systemUnavailable": false,
+        "batteryPause": true
+      },
+      "expected": {
+        "paused": true,
+        "deepSleep": true,
+        "preservingFrame": true,
+        "persistSnapshot": false
+      }
+    },
+    {
+      "name": "systemUnavailable+batteryPause",
+      "input": {
+        "userPaused": false,
+        "powerSave": false,
+        "systemUnavailable": true,
+        "batteryPause": true
+      },
+      "expected": {
+        "paused": true,
+        "deepSleep": true,
+        "preservingFrame": true,
+        "persistSnapshot": true
+      }
+    },
+    {
+      "name": "userPaused+systemUnavailable+batteryPause",
+      "input": {
+        "userPaused": true,
+        "powerSave": false,
+        "systemUnavailable": true,
+        "batteryPause": true
+      },
+      "expected": {
+        "paused": true,
+        "deepSleep": true,
+        "preservingFrame": true,
+        "persistSnapshot": true
+      }
+    },
+    {
+      "name": "powerSave+systemUnavailable+batteryPause",
+      "input": {
+        "userPaused": false,
+        "powerSave": true,
+        "systemUnavailable": true,
+        "batteryPause": true
+      },
+      "expected": {
+        "paused": true,
+        "deepSleep": true,
+        "preservingFrame": true,
+        "persistSnapshot": true
+      }
+    },
+    {
+      "name": "userPaused+powerSave+systemUnavailable+batteryPause",
+      "input": {
+        "userPaused": true,
+        "powerSave": true,
+        "systemUnavailable": true,
+        "batteryPause": true
+      },
+      "expected": {
+        "paused": true,
+        "deepSleep": true,
+        "preservingFrame": true,
+        "persistSnapshot": true
+      }
+    }
+  ]
+}

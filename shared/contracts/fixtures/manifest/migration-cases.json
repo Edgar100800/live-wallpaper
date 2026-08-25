@@ -1,0 +1,86 @@
+{
+  "contractVersion": 1,
+  "description": "Manifest v1 parsing and renderer-to-module mapping. expectedModule: null means invalid manifest. Absent renderer falls back by source (bundled -> parametric-waves, otherwise web). Unknown renderer value is invalid.",
+  "cases": [
+    {
+      "name": "bundled v1 without renderer",
+      "manifest": { "name": "Demo", "createdAt": "2025-06-01T10:00:00Z", "source": "bundled" },
+      "expectedModule": "parametric-waves"
+    },
+    {
+      "name": "imported v1 without renderer",
+      "manifest": { "name": "My import", "createdAt": "2025-06-01T10:00:00Z", "source": "vanilla-js" },
+      "expectedModule": "web"
+    },
+    {
+      "name": "es-module without renderer",
+      "manifest": { "name": "ES mod", "createdAt": "2025-06-01T10:00:00Z", "source": "es-module" },
+      "expectedModule": "web"
+    },
+    {
+      "name": "explicit web",
+      "manifest": { "name": "W", "createdAt": "2025-06-01T10:00:00Z", "source": "folder", "renderer": "web" },
+      "expectedModule": "web"
+    },
+    {
+      "name": "metal-particles maps to parametric-waves",
+      "manifest": { "name": "P", "createdAt": "2025-06-01T10:00:00Z", "source": "bundled", "renderer": "metal-particles" },
+      "expectedModule": "parametric-waves"
+    },
+    {
+      "name": "metal-twin-vortex maps to twin-vortex",
+      "manifest": { "name": "V", "createdAt": "2025-06-01T10:00:00Z", "source": "bundled", "renderer": "metal-twin-vortex" },
+      "expectedModule": "twin-vortex"
+    },
+    {
+      "name": "metal-orbital-bloom maps to orbital-bloom",
+      "manifest": { "name": "O", "createdAt": "2025-06-01T10:00:00Z", "source": "bundled", "renderer": "metal-orbital-bloom" },
+      "expectedModule": "orbital-bloom"
+    },
+    {
+      "name": "metal-hexagonal-rosette maps to hexagonal-rosette",
+      "manifest": { "name": "H", "createdAt": "2025-06-01T10:00:00Z", "source": "bundled", "renderer": "metal-hexagonal-rosette" },
+      "expectedModule": "hexagonal-rosette"
+    },
+    {
+      "name": "metal-noise-rain maps to noise-rain",
+      "manifest": { "name": "R", "createdAt": "2025-06-01T10:00:00Z", "source": "bundled", "renderer": "metal-noise-rain" },
+      "expectedModule": "noise-rain"
+    },
+    {
+      "name": "metal-prime-spiral maps to prime-spiral",
+      "manifest": { "name": "S", "createdAt": "2025-06-01T10:00:00Z", "source": "bundled", "renderer": "metal-prime-spiral" },
+      "expectedModule": "prime-spiral"
+    },
+    {
+      "name": "metal-torus-orbit maps to torus-orbit",
+      "manifest": { "name": "T", "createdAt": "2025-06-01T10:00:00Z", "source": "bundled", "renderer": "metal-torus-orbit" },
+      "expectedModule": "torus-orbit"
+    },
+    {
+      "name": "metal-chromatic-rings maps to chromatic-rings",
+      "manifest": { "name": "C", "createdAt": "2025-06-01T10:00:00Z", "source": "bundled", "renderer": "metal-chromatic-rings" },
+      "expectedModule": "chromatic-rings"
+    },
+    {
+      "name": "unknown renderer is invalid",
+      "manifest": { "name": "U", "createdAt": "2025-06-01T10:00:00Z", "source": "folder", "renderer": "cuda-particles" },
+      "expectedModule": null
+    },
+    {
+      "name": "missing name is invalid",
+      "manifest": { "createdAt": "2025-06-01T10:00:00Z", "source": "folder" },
+      "expectedModule": null
+    },
+    {
+      "name": "missing createdAt is invalid",
+      "manifest": { "name": "X", "source": "folder" },
+      "expectedModule": null
+    },
+    {
+      "name": "missing source is invalid",
+      "manifest": { "name": "Y", "createdAt": "2025-06-01T10:00:00Z" },
+      "expectedModule": null
+    }
+  ]
+}

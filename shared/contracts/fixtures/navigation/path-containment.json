@@ -1,0 +1,13 @@
+{
+  "contractVersion": 1,
+  "description": "Path containment for local-only navigation. Root and target are logical absolute paths; hosts must resolve symlinks/canonicalize before calling.",
+  "cases": [
+    { "name": "exact root", "root": "/library/wp-uuid", "target": "/library/wp-uuid", "allowed": true },
+    { "name": "direct descendant", "root": "/library/wp-uuid", "target": "/library/wp-uuid/index.html", "allowed": true },
+    { "name": "nested descendant", "root": "/library/wp-uuid", "target": "/library/wp-uuid/assets/three-esm/module.js", "allowed": true },
+    { "name": "sibling prefix trap", "root": "/library/foo", "target": "/library/foobar/x.html", "allowed": false },
+    { "name": "parent of root", "root": "/library/wp-uuid", "target": "/library", "allowed": false },
+    { "name": "unrelated path", "root": "/library/wp-uuid", "target": "/etc/passwd", "allowed": false },
+    { "name": "prefix inside another file name", "root": "/library/wp-uuid", "target": "/library/wp-uuid.bak/index.html", "allowed": false }
+  ]
+}

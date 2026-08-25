@@ -1,0 +1,14 @@
+{
+  "contractVersion": 1,
+  "description": "URL scheme policy for wallpaper navigation. Mirrors WebViewFactory.swift: about/blob/data always allowed; file requires path containment; everything else denied.",
+  "cases": [
+    { "scheme": "about", "allowed": true },
+    { "scheme": "blob", "allowed": true },
+    { "scheme": "data", "allowed": true },
+    { "scheme": "file", "allowed": "path-check" },
+    { "scheme": "http", "allowed": false },
+    { "scheme": "https", "allowed": false },
+    { "scheme": "javascript", "allowed": false },
+    { "scheme": "", "allowed": false }
+  ]
+}
