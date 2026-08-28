@@ -128,6 +128,7 @@ mod gpu {
         pub size_px: (f32, f32),
         /// Keepalive for the dedicated Wayland surface feeding `presenter`.
         /// Declared after the presenter so raw pointers are dropped first.
+        #[allow(dead_code)]
         pub session: crate::web::wayland::GpuLayerSurface,
     }
 
@@ -451,6 +452,7 @@ pub fn run() {
             windows: Vec::new(),
             switch: None,
             on_colors: None,
+            output_count: None,
         }));
 
         let gpu_rt = Rc::new(RefCell::new(gpu::GpuRuntime {
@@ -482,6 +484,21 @@ pub fn run() {
             let rt = gpu_rt.clone();
             state.borrow_mut().on_colors = Some(Rc::new(move |colors: &library::ColorSettings| {
                 rt.borrow_mut().apply_config(colors);
+            }));
+        }
+
+        // Status reports the live renderer's outputs (GPU when active,
+        // webviews otherwise).
+        #[cfg(feature = "gpu")]
+        {
+            let st = state.clone();
+            let rt = gpu_rt.clone();
+            state.borrow_mut().output_count = Some(Rc::new(move || {
+                if !rt.borrow().outputs.is_empty() {
+                    rt.borrow().outputs.len()
+                } else {
+                    st.borrow().webviews.len()
+                }
             }));
         }
 

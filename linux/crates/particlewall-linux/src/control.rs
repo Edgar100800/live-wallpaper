@@ -99,6 +99,9 @@ pub struct DaemonState {
     /// Appearance hook for non-web renderers (GPU), set by the host.
     #[cfg(feature = "gpu")]
     pub on_colors: Option<std::rc::Rc<dyn Fn(&library::ColorSettings)>>,
+    /// Live output-count hook (GPU-aware), set by the host.
+    #[cfg(feature = "gpu")]
+    pub output_count: Option<std::rc::Rc<dyn Fn() -> usize>>,
 }
 
 impl DaemonState {
@@ -259,7 +262,17 @@ impl DaemonState {
                     None => format!("{{\"error\":\"unknown profile '{name}'\"}}\n"),
                 }
             }
-            Command::Status => self.status_reply(self.webviews.len()),
+            Command::Status => {
+                #[cfg(feature = "gpu")]
+                let outputs = self
+                    .output_count
+                    .as_ref()
+                    .map(|f| f())
+                    .unwrap_or(self.webviews.len());
+                #[cfg(not(feature = "gpu"))]
+                let outputs = self.webviews.len();
+                self.status_reply(outputs)
+            }
             Command::Quit => String::new(),
         }
     }

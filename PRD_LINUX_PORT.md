@@ -605,8 +605,8 @@ Esta tabla debe actualizarse al completar cada fase.
 |---|---|---|---|
 | T0 - Tests y baseline | Completado (baseline Mac verificado por el usuario; contratos y tests Linux en verde) | swift test + build-app.sh OK en Mac; 7 tests cargo + 5 tests node | 2026-08-25 |
 | M0A - WebKit layer-shell | Completado | Daemon WebKitGTK corriendo bajo systemd --user en Omarchy/Hyprland; wallpaper DefaultWallpaper visible; CLI --pause/--resume/--fps/--status operativa via socket | 2026-08-25 |
-| M0B - wgpu layer-shell | Parcial (spike GTK/layer-shell validado; wgpu pendiente para módulos GPU) | pw-layer-spike validado en vivo: superficie BACKGROUND + reloj animado | 2026-08-25 |
-| M1 - Primer modulo compartido | Pendiente | - | - |
+| M0B - wgpu layer-shell | Completado | GPU renderer wgpu/Vulkan en vivo en Omarchy: connection Wayland dedicada + superficies zwlr-layer-shell (GTK 4.18 no puede compartir wl_surface con la WSI de NVIDIA por wp_fifo_v1); presenters persistentes (parked) en switches web-gpu | 2026-08-28 |
+| M1 - Primer modulo compartido | Completado | particle.wgsl (particle-v1) + modulo parametric-waves + crate particlewall-render (uniforms 128B, referencia CPU, presenter wgpu, tests de paridad CPU-GPU en verde); wallpaper GPU aplicado y verificado visualmente en vivo | 2026-08-28 |
 | M2 - Ocho fondos GPU | Pendiente | - | - |
 | M3 - Daemon funcional | En curso adelantado (multi-output + CLI listos; faltan persistencia, importador y biblioteca) | linux/crates/particlewall-linux | 2026-08-25 |
 | M4 - Energia y deep sleep | Pendiente | - | - |

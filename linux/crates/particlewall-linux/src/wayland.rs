@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use wayland_client::protocol::{wl_compositor, wl_compositor::WlCompositor, wl_output, wl_output::WlOutput, wl_registry, wl_registry::WlRegistry, wl_surface, wl_surface::WlSurface};
+use wayland_client::protocol::{wl_compositor::WlCompositor, wl_output, wl_output::WlOutput, wl_registry, wl_registry::WlRegistry, wl_surface, wl_surface::WlSurface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_shell_v1::{Layer, ZwlrLayerShellV1}};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_surface_v1, zwlr_layer_surface_v1::{Anchor, KeyboardInteractivity, ZwlrLayerSurfaceV1}};
@@ -171,6 +171,8 @@ pub struct GpuLayerSurface {
     pub wl_surface: *mut std::ffi::c_void,
     /// Physical buffer size (logical configure size x buffer scale).
     pub size_px: (u32, u32),
+    /// Buffer scale applied via set_buffer_scale (kept for diagnostics).
+    #[allow(dead_code)]
     pub scale: i32,
 }
 
