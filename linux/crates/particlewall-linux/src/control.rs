@@ -91,6 +91,14 @@ pub struct DaemonState {
     pub profiles_ui: Option<Arc<std::sync::Mutex<Vec<String>>>>,
     #[allow(clippy::type_complexity)]
     pub tray: Option<ksni::blocking::Handle<ParticleWallTray>>,
+    /// Layer windows per output; renderers attach children to these.
+    pub windows: Vec<(String, gtk4::ApplicationWindow)>,
+    /// Renderer switch hook (web <-> GPU), set by the host at startup.
+    #[cfg(feature = "gpu")]
+    pub switch: Option<std::rc::Rc<dyn Fn(&str) -> String>>,
+    /// Appearance hook for non-web renderers (GPU), set by the host.
+    #[cfg(feature = "gpu")]
+    pub on_colors: Option<std::rc::Rc<dyn Fn(&library::ColorSettings)>>,
 }
 
 impl DaemonState {
@@ -118,6 +126,10 @@ impl DaemonState {
     }
 
     fn push_colors(&self) {
+        #[cfg(feature = "gpu")]
+        if let Some(hook) = &self.on_colors {
+            hook(&self.colors);
+        }
         let mut parts = Vec::new();
         if let Some(b) = self.colors.background {
             parts.push(format!("backgroundColor:{b}"));
@@ -196,26 +208,10 @@ impl DaemonState {
                 self.set_fps(*fps);
                 "ok\n".into()
             }
-            Command::Apply(id) => {
-                match crate::web::library::find(id) {
-                    Some(wp) => {
-                        let uri = format!("file://{}", wp.index.display());
-                        for (_, wv) in &self.webviews {
-                            wv.load_uri(&uri);
-                        }
-                        self.wallpaper = wp.id.clone();
-                        if let Some(current) = &self.current {
-                            *current.lock().unwrap() = wp.id.clone();
-                        }
-                        // New document: re-apply the saved appearance once
-                        // the appearance bridge is installed.
-                        self.push_colors();
-                        self.persist();
-                        format!("{{\"applied\":\"{}\"}}\n", wp.name)
-                    }
-                    None => return format!("{{\"error\":\"unknown wallpaper '{id}'\"}}\n"),
-                }
-            }
+            // Routed to apply_wallpaper by the applier loop: the renderer
+            // switch hook re-borrows the shared state, so it can never run
+            // under this borrow_mut.
+            Command::Apply(_) => "{\"error\":\"internal: apply misrouted\"}\n".into(),
             Command::SetColors(new_colors) => {
                 if new_colors.background.is_some() {
                     self.colors.background = new_colors.background;
@@ -272,6 +268,49 @@ impl DaemonState {
 type SharedState = Rc<RefCell<DaemonState>>;
 pub type CmdTx = async_channel::Sender<(Option<UnixStream>, Command)>;
 
+/// Web-only fallback when no renderer switch hook is installed (gpu feature
+/// disabled): load the wallpaper into the existing web children.
+fn web_fallback(state: &SharedState, wp: &library::Wallpaper) -> String {
+    let uri = format!("file://{}", wp.index.display());
+    let st = state.borrow_mut();
+    for (_, wv) in &st.webviews {
+        wv.load_uri(&uri);
+    }
+    format!("{{\"applied\":\"{}\"}}\n", wp.name)
+}
+
+/// Switches the active wallpaper. Runs on the GTK main thread with NO active
+/// borrow of `state`: the renderer switch hook borrows it again while
+/// rebuilding the window children (spawn_web_child).
+fn apply_wallpaper(state: &SharedState, id: &str) -> String {
+    let Some(wp) = library::find(id) else {
+        return format!("{{\"error\":\"unknown wallpaper '{id}'\"}}\n");
+    };
+
+    #[cfg(feature = "gpu")]
+    let reply = {
+        // Clone the hook out; the temporary borrow ends with this statement.
+        let hook = state.borrow().switch.clone();
+        match hook {
+            Some(sw) => sw(&wp.id),
+            None => web_fallback(state, &wp),
+        }
+    };
+    #[cfg(not(feature = "gpu"))]
+    let reply = web_fallback(state, &wp);
+
+    let mut st = state.borrow_mut();
+    st.wallpaper = wp.id.clone();
+    if let Some(current) = &st.current {
+        *current.lock().unwrap() = wp.id.clone();
+    }
+    st.persist();
+    if let Some(handle) = &st.tray {
+        handle.update(|_| {});
+    }
+    reply
+}
+
 /// Starts the applier task on the GTK main thread plus the socket listener
 /// thread. The caller keeps a clone of `tx` for internal command sources
 /// (e.g. the system tray menu).
@@ -294,14 +333,19 @@ pub fn start(
                 app.quit();
                 break;
             }
-            let reply = {
-                let mut st = state.borrow_mut();
-                let reply = st.apply(&cmd);
-                // Refresh tray icon/title after any playback change.
-                if let Some(handle) = &st.tray {
-                    handle.update(|_| {});
+            // Apply swaps renderers through the switch hook, which re-borrows
+            // the shared state internally; it must run with no active borrow.
+            let reply = match &cmd {
+                Command::Apply(id) => apply_wallpaper(&state, id),
+                _ => {
+                    let mut st = state.borrow_mut();
+                    let reply = st.apply(&cmd);
+                    // Refresh tray icon/title after any playback change.
+                    if let Some(handle) = &st.tray {
+                        handle.update(|_| {});
+                    }
+                    reply
                 }
-                reply
             };
             if let Some(mut stream) = stream {
                 let _ = stream.write_all(reply.as_bytes());

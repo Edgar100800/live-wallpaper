@@ -1,3 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["crates/particlewall-contracts", "crates/particlewall-linux"]
+members = [
+    "crates/particlewall-contracts",
+    "crates/particlewall-render",
+    "crates/particlewall-linux",
+]
