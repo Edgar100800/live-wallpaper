@@ -603,7 +603,7 @@ Esta tabla debe actualizarse al completar cada fase.
 
 | Fase | Estado | Evidencia | Fecha |
 |---|---|---|---|
-| T0 - Tests y baseline | En curso (lado Linux listo; baseline Mac pendiente) | shared/, linux/crates/particlewall-contracts: 7 tests cargo + 5 tests node en verde | 2026-08-25 |
+| T0 - Tests y baseline | Completado (baseline Mac verificado por el usuario; contratos y tests Linux en verde) | swift test + build-app.sh OK en Mac; 7 tests cargo + 5 tests node | 2026-08-25 |
 | M0A - WebKit layer-shell | Completado | Daemon WebKitGTK corriendo bajo systemd --user en Omarchy/Hyprland; wallpaper DefaultWallpaper visible; CLI --pause/--resume/--fps/--status operativa via socket | 2026-08-25 |
 | M0B - wgpu layer-shell | Parcial (spike GTK/layer-shell validado; wgpu pendiente para módulos GPU) | pw-layer-spike validado en vivo: superficie BACKGROUND + reloj animado | 2026-08-25 |
 | M1 - Primer modulo compartido | Pendiente | - | - |
