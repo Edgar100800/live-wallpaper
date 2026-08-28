@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "parametric-waves",
+  "version": 1,
+  "engine": "particle-v1",
+  "minimumEngineVersion": 1,
+  "model": "parametric-waves",
+  "legacyRenderer": "metal-particles",
+  "capabilities": ["procedural"],
+  "vertexCount": 10000,
+  "canvasSize": 400,
+  "defaults": {
+    "backgroundColor": 198153,
+    "particleColor": 15269887,
+    "particleSize": 1.6,
+    "brightness": 1.5,
+    "speed": 1.0,
+    "scale": 1.0
+  },
+  "controls": [
+    { "id": "backgroundColor", "semanticRole": "clear-color", "kind": "color", "default": 198153 },
+    { "id": "particleColor", "semanticRole": "appearance.rgb", "kind": "color", "default": 15269887 },
+    { "id": "particleSize", "semanticRole": "point-size", "kind": "number", "min": 0.25, "max": 4, "step": 0.05, "default": 1.6 },
+    { "id": "brightness", "semanticRole": "appearance.w", "kind": "number", "min": 0.05, "max": 3, "step": 0.05, "default": 1.5 },
+    { "id": "speed", "semanticRole": "time-scale", "kind": "number", "min": 0, "max": 4, "step": 0.05, "default": 1.0 },
+    { "id": "scale", "semanticRole": "transform.scale", "kind": "number", "min": 0.2, "max": 5, "step": 0.05, "default": 1.0 }
+  ],
+  "output": {
+    "pixelFormat": "bgra8unorm",
+    "blend": "source-alpha/one-minus-source-alpha",
+    "backgroundParameter": "backgroundColor"
+  },
+  "preview": {
+    "htmlFallback": "Sources/ParticleWall/Resources/DefaultWallpaper/index.html"
+  }
+}
