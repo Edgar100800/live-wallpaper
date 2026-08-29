@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=ParticleWall
+GenericName=Fondos animados
+Comment=Wallpapers de partículas GPU para Hyprland/Wayland
+Exec=@BIN@ --app
+Icon=particlewall
+Terminal=false
+Categories=Utility;
+Keywords=wallpaper;fondo;particulas;particles;hyprland;
+StartupNotify=true

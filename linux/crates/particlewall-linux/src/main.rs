@@ -14,6 +14,8 @@
 //!   particlewall --profile-apply "Nombre"    apply a saved profile
 //!   particlewall --profile-delete "Nombre"
 //!   particlewall --status     print daemon state as JSON
+//!   particlewall --app        launcher entry: ensure the daemon runs and
+//!                             open the settings window
 
 #[cfg(feature = "web")]
 mod layer;
@@ -28,6 +30,10 @@ mod settings;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    if args.first().map(String::as_str) == Some("--app") {
+        std::process::exit(app_mode());
+    }
 
     if let Some(cmd) = cli_command(&args) {
         match cmd {
@@ -47,6 +53,47 @@ fn main() {
         eprintln!("Rebuild with --features web, or use pw-layer-spike for the no-webkit spike.");
         std::process::exit(2);
     }
+}
+
+/// Desktop-launcher mode: make sure the daemon is running, then open the
+/// settings window. Never starts a second daemon (the systemd service owns
+/// the daemon lifecycle; a manual detached fallback keeps dev setups working).
+fn app_mode() -> i32 {
+    let open = || cli::send_and_print(r#"{"cmd":"open-settings"}"#.into());
+
+    if cli::daemon_reachable() {
+        return open();
+    }
+
+    // Preferred path: the installed user service (idempotent when active).
+    let started = std::process::Command::new("systemctl")
+        .args(["--user", "start", "particlewall.service"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+
+    if !started {
+        // Fallback for repos without the service installed: spawn a detached
+        // daemon (own process group, output discarded).
+        use std::os::unix::process::CommandExt;
+        let exe = std::env::current_exe().expect("current exe");
+        std::process::Command::new(exe)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("spawn detached daemon");
+    }
+
+    // Wait for the control socket to appear.
+    for _ in 0..50 {
+        if cli::daemon_reachable() {
+            return open();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    eprintln!("particlewall: daemon did not come up");
+    3
 }
 
 enum CliAction {
@@ -208,6 +255,11 @@ mod cli {
                 0
             }
         }
+    }
+
+    /// True when the daemon control socket accepts connections.
+    pub fn daemon_reachable() -> bool {
+        UnixStream::connect(control_socket_path()).is_ok()
     }
 
     fn control_socket_path() -> std::path::PathBuf {

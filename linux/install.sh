@@ -16,6 +16,15 @@ UNIT_DIR="$HOME/.config/systemd/user"
 mkdir -p "$UNIT_DIR"
 sed "s|%h|$HOME|" "$DIR/particlewall.service" > "$UNIT_DIR/particlewall.service"
 
+echo "==> installing desktop entry + icon"
+BIN_PATH="$DIR/target/release/particlewall"
+APP_DIR="$HOME/.local/share/applications"
+ICON_DIR="$HOME/.local/share/icons/hicolor/512x512/apps"
+mkdir -p "$APP_DIR" "$ICON_DIR"
+sed "s|@BIN@|$BIN_PATH|" "$DIR/assets/particlewall.desktop" > "$APP_DIR/particlewall.desktop"
+cp "$DIR/assets/icon.png" "$ICON_DIR/particlewall.png"
+gtk-update-icon-cache -f "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+
 echo "==> stopping manual instances"
 pkill -f "$HOME/Projects/live-wallpaper/linux/target/release/particlewall" 2>/dev/null || true
 
@@ -23,4 +32,4 @@ systemctl --user daemon-reload
 systemctl --user enable --now particlewall.service
 sleep 2
 systemctl --user --no-pager status particlewall.service | head -6
-echo "==> done. CLI: particlewall --status | --pause | --resume | --fps <N>"
+echo "==> done. Launcher: buscar ParticleWall en el menu | CLI: particlewall --status"
