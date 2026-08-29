@@ -607,7 +607,7 @@ Esta tabla debe actualizarse al completar cada fase.
 | M0A - WebKit layer-shell | Completado | Daemon WebKitGTK corriendo bajo systemd --user en Omarchy/Hyprland; wallpaper DefaultWallpaper visible; CLI --pause/--resume/--fps/--status operativa via socket | 2026-08-25 |
 | M0B - wgpu layer-shell | Completado | GPU renderer wgpu/Vulkan en vivo en Omarchy: connection Wayland dedicada + superficies zwlr-layer-shell (GTK 4.18 no puede compartir wl_surface con la WSI de NVIDIA por wp_fifo_v1); presenters persistentes (parked) en switches web-gpu | 2026-08-28 |
 | M1 - Primer modulo compartido | Completado | particle.wgsl (particle-v1) + modulo parametric-waves + crate particlewall-render (uniforms 128B, referencia CPU, presenter wgpu, tests de paridad CPU-GPU en verde); wallpaper GPU aplicado y verificado visualmente en vivo | 2026-08-28 |
-| M2 - Ocho fondos GPU | Pendiente | - | - |
+| M2 - Ocho fondos GPU | Completado (grafo compartido implementado; pendiente UI de controles de grafo) | particle.wgsl con 8 modelos + flowUpdate + grafo; fixtures y contratos FR-GPU-06..09 en verde; ciclo completo de 8 fondos verificado en vivo sin caídas (NVIDIA WSI: presenters permanentes reconfigurados in-place) | 2026-08-28 |
 | M3 - Daemon funcional | En curso adelantado (multi-output + CLI listos; faltan persistencia, importador y biblioteca) | linux/crates/particlewall-linux | 2026-08-25 |
 | M4 - Energia y deep sleep | Pendiente | - | - |
 | M5 - Empaquetado | Parcial (servicio systemd + install.sh listos) | linux/install.sh, linux/particlewall.service | 2026-08-25 |
