@@ -13,7 +13,7 @@ fn fixture_path(module: &str) -> std::path::PathBuf {
 }
 
 /// Selected ids per model, respecting each model's instance count.
-const SAMPLE_IDS: [&[u32]; 8] = [
+const SAMPLE_IDS: [&[u32]; 9] = [
     &[0, 1, 234, 4999, 9998, 9999],
     &[0, 1, 7, 15000, 29998, 29999],
     &[0, 1, 799, 12000, 29998, 29999],
@@ -22,6 +22,7 @@ const SAMPLE_IDS: [&[u32]; 8] = [
     &[0, 1, 1000, 40000, 78497],
     &[0, 511, 512, 20000, 37374, 37375],
     &[0, 7, 8, 6000, 49798, 49799],
+    &[0, 79, 80, 1600, 3198, 3199],
 ];
 
 const SAMPLE_TIMES: [f32; 4] = [0.0, 1.7, 13.3, 41.25];
@@ -78,7 +79,7 @@ fn reference_cases(model: u32) -> serde_json::Value {
     })
 }
 
-pub const MODULE_IDS: [&str; 8] = [
+pub const MODULE_IDS: [&str; 9] = [
     "parametric-waves",
     "twin-vortex",
     "orbital-bloom",
@@ -87,11 +88,12 @@ pub const MODULE_IDS: [&str; 8] = [
     "prime-spiral",
     "torus-orbit",
     "chromatic-rings",
+    "sphere-torus",
 ];
 
 #[test]
 fn cpu_reference_matches_committed_fixture() {
-    for model in 0..8u32 {
+    for model in 0..9u32 {
         let path = fixture_path(MODULE_IDS[model as usize]);
         if std::env::var("GENERATE_FIXTURES").is_ok() {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -312,7 +314,7 @@ fn upload_flow_buffers(ctx: &GpuCtx, flow: &cpu::FlowState) -> (wgpu::Buffer, wg
 #[test]
 fn gpu_wgsl_matches_cpu_reference() {
     let ctx = gpu_ctx();
-    for model in 0..8u32 {
+    for model in 0..9u32 {
         let flow = reference_flow(model);
         let (particles_buf, history_buf) = upload_flow_buffers(&ctx, &flow);
         let ids: Vec<u32> = SAMPLE_IDS[model as usize].to_vec();

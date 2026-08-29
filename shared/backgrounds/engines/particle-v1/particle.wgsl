@@ -144,8 +144,7 @@ fn sampleHexagonalRosette(id: u32, t: f32) -> vec2f {
 
 // Órbita Toroidal (model 6): 64 toruses represented by a balanced 36,864
 // point cloud, plus a 512-point light sphere.
-fn sampleTorusOrbit(id: u32, t: f32, pointScale: ptr<function, f32>) -> vec2f {
-  let f = t;
+fn sampleTorusOrbit(id: u32, t: f32, pointScale: ptr<function, f32>) -> vec2f {  let f = t;
   var world: vec3f;
   if (id < 512u) {
     let sidx = f32(id) + 0.5;
@@ -193,6 +192,43 @@ fn sampleTorusOrbit(id: u32, t: f32, pointScale: ptr<function, f32>) -> vec2f {
   let perspective = eyeZ / max(72.0, eyeZ - world.z);
   return vec2f(200.0 + world.x * perspective,
                200.0 + world.y * perspective);
+}
+
+// Toro de Esferas (model 8): ring of spheres whose radius breathes with
+// cos(v); t wraps every unit like the source dweet (t=(t+.02)%1, 60 FPS
+// baseline -> t = time * 1.2).
+fn sampleSphereTorus(id: u32, t: f32, pointScale: ptr<function, f32>) -> vec2f {
+  let p = 0.078539816; // PI/40
+  let y = id / 80u;
+  let x = id % 80u;
+  let v = (f32(y) + t) * p * 2.0;
+  let u = (f32(x) + t) * p;
+  let r = 90.0;
+  let ring = 2.0 + sin(v);
+  var local = vec3f(ring * cos(u) * r,
+                    ring * sin(u) * r,
+                    cos(v) * r);
+
+  // p5 applies rotateX(.5) then rotateY(-.5); the model matrix is
+  // Rx * Ry, so rotateY lands on the point first.
+  let cy = cos(-0.5);
+  let sy = sin(-0.5);
+  local = vec3f(local.x * cy + local.z * sy,
+                local.y,
+                -local.x * sy + local.z * cy);
+  let cx = cos(0.5);
+  let sx = sin(0.5);
+  local = vec3f(local.x,
+                local.y * cx - local.z * sx,
+                local.y * sx + local.z * cx);
+
+  // p5 default WEBGL camera for a 600px canvas: 300 / tan(PI/6).
+  let eyeZ = 519.61524;
+  let perspective = eyeZ / max(72.0, eyeZ - local.z);
+  // Sphere radius cos(v)+0.3 drives the sprite size.
+  *pointScale = max(0.1, cos(v) + 0.3);
+  return vec2f(300.0 + local.x * perspective,
+               300.0 + local.y * perspective);
 }
 
 /// Samples a particle; `style` selects the model (model.x), exactly like the
@@ -247,7 +283,7 @@ fn particleSample(id: u32, u: Uniforms) -> ParticleSample {
   } else if (style < 6.5) {
     // Órbita Toroidal: 0.3 rad/s on the Swift animation time.
     pixel = sampleTorusOrbit(id, u.time * 0.3, &pointScale);
-  } else {
+  } else if (style < 7.5) {
     // Anillos Cromáticos: the source's eleven HSB rings contain 6,225
     // points. Eight nearby time samples reproduce the soft BLUR trail
     // without filtering or retaining a full 720x720 framebuffer.
@@ -285,6 +321,11 @@ fn particleSample(id: u32, u: Uniforms) -> ParticleSample {
     renderColor = hsbColor * u.appearance.rgb;
     let sourceAlpha = clamp(0.7 / max(energy, 0.025), 0.018, 0.82);
     trailAlpha = sourceAlpha * exp(-f32(trailID) * 0.32);
+  } else {
+    // Toro de Esferas (model 8): t wraps every unit in the source dweet.
+    let t = (u.time * 1.2) % 1.0;
+    pixel = sampleSphereTorus(id, t, &pointScale);
+    canvasSize = 600.0;
   }
 
   // Convert the source canvas into aspect-correct clip space.

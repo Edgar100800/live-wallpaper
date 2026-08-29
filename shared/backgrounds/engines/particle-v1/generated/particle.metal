@@ -235,12 +235,44 @@ metal::float2 sampleTorusOrbit(
     return metal::float2(200.0 + (_e147 * perspective), 200.0 + (_e152 * perspective));
 }
 
+metal::float2 sampleSphereTorus(
+    uint id_5,
+    float t_5,
+    thread float& pointScale_1
+) {
+    metal::float3 local_1 = {};
+    uint y_2 = naga_div(id_5, 80u);
+    uint x = naga_mod(id_5, 80u);
+    float v = ((static_cast<float>(y_2) + t_5) * 0.07853982) * 2.0;
+    float u_2 = (static_cast<float>(x) + t_5) * 0.07853982;
+    float ring = 2.0 + metal::sin(v);
+    local_1 = metal::float3((ring * metal::cos(u_2)) * 90.0, (ring * metal::sin(u_2)) * 90.0, metal::cos(v) * 90.0);
+    float _e33 = local_1.x;
+    float _e36 = local_1.z;
+    float _e40 = local_1.y;
+    float _e42 = local_1.x;
+    float _e46 = local_1.z;
+    local_1 = metal::float3((_e33 * 0.87758255) + (_e36 * -0.47942555), _e40, (-(_e42) * -0.47942555) + (_e46 * 0.87758255));
+    float _e53 = local_1.x;
+    float _e55 = local_1.y;
+    float _e58 = local_1.z;
+    float _e62 = local_1.y;
+    float _e65 = local_1.z;
+    local_1 = metal::float3(_e53, (_e55 * 0.87758255) - (_e58 * 0.47942555), (_e62 * 0.47942555) + (_e65 * 0.87758255));
+    float _e71 = local_1.z;
+    float perspective_1 = 519.61523 / metal::max(72.0, 519.61523 - _e71);
+    pointScale_1 = metal::max(0.1, metal::cos(v) + 0.3);
+    float _e82 = local_1.x;
+    float _e87 = local_1.y;
+    return metal::float2(300.0 + (_e82 * perspective_1), 300.0 + (_e87 * perspective_1));
+}
+
 uint naga_f2u32(float value) {
     return static_cast<uint>(metal::clamp(value, 0.0, 4294967000.0));
 }
 
 ParticleSample particleSample(
-    uint id_5,
+    uint id_6,
     Uniforms u,
     device type_4 const& flowParticles,
     device type_4 const& flowHistory,
@@ -248,7 +280,7 @@ ParticleSample particleSample(
 ) {
     metal::float2 pixel = {};
     float canvasSize = 400.0;
-    float pointScale_1 = 1.0;
+    float pointScale_2 = 1.0;
     float trailAlpha = 1.0;
     metal::float3 renderColor = {};
     uint localID = {};
@@ -259,90 +291,97 @@ ParticleSample particleSample(
     renderColor = u.appearance.xyz;
     float style = u.model.x;
     if (style < 0.5) {
-        float t_5 = u.time * 1.1780972;
-        metal::float2 _e19 = sampleParametricWaves(id_5, t_5);
+        float t_6 = u.time * 1.1780972;
+        metal::float2 _e19 = sampleParametricWaves(id_6, t_6);
         pixel = _e19;
     } else {
         if (style < 1.5) {
-            float t_6 = u.time * 2.0943952;
-            metal::float2 _e25 = sampleTwinVortex(id_5, t_6);
+            float t_7 = u.time * 2.0943952;
+            metal::float2 _e25 = sampleTwinVortex(id_6, t_7);
             pixel = _e25;
         } else {
             if (style < 2.5) {
-                float t_7 = u.time * 1.5707964;
-                metal::float2 _e31 = sampleOrbitalBloom(id_5, t_7);
+                float t_8 = u.time * 1.5707964;
+                metal::float2 _e31 = sampleOrbitalBloom(id_6, t_8);
                 pixel = _e31;
             } else {
                 if (style < 3.5) {
-                    float t_8 = u.time * 0.3926991;
-                    metal::float2 _e37 = sampleHexagonalRosette(id_5, t_8);
+                    float t_9 = u.time * 0.3926991;
+                    metal::float2 _e37 = sampleHexagonalRosette(id_6, t_9);
                     pixel = _e37;
                 } else {
                     if (style < 4.5) {
-                        uint particleID = naga_div(id_5, 12u);
-                        uint trailID = naga_mod(id_5, 12u);
+                        uint particleID = naga_div(id_6, 12u);
+                        uint trailID = naga_mod(id_6, 12u);
                         uint latestSlot = naga_f2u32(u.model.y + 0.5);
                         uint slot_2 = naga_mod((latestSlot + 12u) - trailID, 12u);
                         metal::float4 s = flowHistory[(particleID * 12u) + slot_2];
                         pixel = s.xy;
                         canvasSize = 720.0;
-                        pointScale_1 = metal::max(0.16, s.z / 3.0);
+                        pointScale_2 = metal::max(0.16, s.z / 3.0);
                         trailAlpha = s.w * metal::exp(-(static_cast<float>(trailID)) * 0.2);
                     } else {
                         if (style < 5.5) {
-                            float prime = flowParticles[id_5].x;
-                            float t_9 = 1.0 + (u.time * 0.000003);
-                            pixel = metal::float2(((prime * metal::sin(prime * t_9)) / 99.0) + 400.0, ((prime * metal::cos(prime * t_9)) / 99.0) + 400.0);
+                            float prime = flowParticles[id_6].x;
+                            float t_10 = 1.0 + (u.time * 0.000003);
+                            pixel = metal::float2(((prime * metal::sin(prime * t_10)) / 99.0) + 400.0, ((prime * metal::cos(prime * t_10)) / 99.0) + 400.0);
                             canvasSize = 800.0;
-                            pointScale_1 = 0.38;
+                            pointScale_2 = 0.38;
                         } else {
                             if (style < 6.5) {
-                                metal::float2 _e103 = sampleTorusOrbit(id_5, u.time * 0.3, pointScale_1);
+                                metal::float2 _e103 = sampleTorusOrbit(id_6, u.time * 0.3, pointScale_2);
                                 pixel = _e103;
                             } else {
-                                uint baseID = naga_div(id_5, 8u);
-                                uint trailID_1 = naga_mod(id_5, 8u);
-                                localID = baseID;
-                                uint2 loop_bound = uint2(4294967295u);
-                                while(true) {
-                                    if (metal::all(loop_bound == uint2(0u))) { break; }
-                                    loop_bound -= uint2(loop_bound.y == 0u, 1u);
-                                    float _e112 = d;
-                                    ringPointCount = naga_f2u32(metal::ceil(3.1415927 * _e112));
-                                    uint _e117 = localID;
-                                    uint _e118 = ringPointCount;
-                                    if (_e117 < _e118) {
-                                        break;
+                                if (style < 7.5) {
+                                    uint baseID = naga_div(id_6, 8u);
+                                    uint trailID_1 = naga_mod(id_6, 8u);
+                                    localID = baseID;
+                                    uint2 loop_bound = uint2(4294967295u);
+                                    while(true) {
+                                        if (metal::all(loop_bound == uint2(0u))) { break; }
+                                        loop_bound -= uint2(loop_bound.y == 0u, 1u);
+                                        float _e114 = d;
+                                        ringPointCount = naga_f2u32(metal::ceil(3.1415927 * _e114));
+                                        uint _e119 = localID;
+                                        uint _e120 = ringPointCount;
+                                        if (_e119 < _e120) {
+                                            break;
+                                        }
+                                        uint _e122 = ringPointCount;
+                                        uint _e123 = localID;
+                                        localID = _e123 - _e122;
+                                        float _e126 = d;
+                                        d = _e126 - 30.0;
                                     }
-                                    uint _e120 = ringPointCount;
-                                    uint _e121 = localID;
-                                    localID = _e121 - _e120;
-                                    float _e124 = d;
-                                    d = _e124 - 30.0;
+                                    float t_11 = metal::max(0.0, (u.time * 30.0) - (static_cast<float>(trailID_1) * 0.85));
+                                    uint _e137 = localID;
+                                    float _e141 = d;
+                                    float r = (static_cast<float>(_e137) * 2.0) / _e141;
+                                    float _e143 = d;
+                                    float tangent = metal::tan((_e143 / 199.0) - (t_11 / 99.0));
+                                    float energy = metal::min(tangent * tangent, 64.0);
+                                    float _e155 = d;
+                                    float _e158 = flowNoise(metal::float3(r * 99.0, _e155, 0.0));
+                                    float _e159 = d;
+                                    float _e164 = d;
+                                    float _e170 = d;
+                                    float radius_1 = _e159 + ((((metal::sin((r * 9.0) + (((t_11 / 9.0) * _e164) / 720.0)) * _e170) * 0.25) * _e158) * energy);
+                                    float angle_1 = r - 1.5707964;
+                                    pixel = metal::float2((metal::cos(angle_1) * radius_1) + 360.0, (metal::sin(angle_1) * radius_1) + 360.0);
+                                    canvasSize = 720.0;
+                                    pointScale_2 = 0.9;
+                                    float _e190 = d;
+                                    float hue = metal::clamp(_e190, 0.0, 255.0) / 255.0;
+                                    metal::float3 _e199 = hsvToRGB(metal::float3(hue, 0.19607843, 1.0));
+                                    renderColor = _e199 * u.appearance.xyz;
+                                    float sourceAlpha = metal::clamp(0.7 / metal::max(energy, 0.025), 0.018, 0.82);
+                                    trailAlpha = sourceAlpha * metal::exp(-(static_cast<float>(trailID_1)) * 0.32);
+                                } else {
+                                    float t_12 = metal::fmod(u.time * 1.2, 1.0);
+                                    metal::float2 _e221 = sampleSphereTorus(id_6, t_12, pointScale_2);
+                                    pixel = _e221;
+                                    canvasSize = 600.0;
                                 }
-                                float t_10 = metal::max(0.0, (u.time * 30.0) - (static_cast<float>(trailID_1) * 0.85));
-                                uint _e135 = localID;
-                                float _e139 = d;
-                                float r = (static_cast<float>(_e135) * 2.0) / _e139;
-                                float _e141 = d;
-                                float tangent = metal::tan((_e141 / 199.0) - (t_10 / 99.0));
-                                float energy = metal::min(tangent * tangent, 64.0);
-                                float _e153 = d;
-                                float _e156 = flowNoise(metal::float3(r * 99.0, _e153, 0.0));
-                                float _e157 = d;
-                                float _e162 = d;
-                                float _e168 = d;
-                                float radius_1 = _e157 + ((((metal::sin((r * 9.0) + (((t_10 / 9.0) * _e162) / 720.0)) * _e168) * 0.25) * _e156) * energy);
-                                float angle_1 = r - 1.5707964;
-                                pixel = metal::float2((metal::cos(angle_1) * radius_1) + 360.0, (metal::sin(angle_1) * radius_1) + 360.0);
-                                canvasSize = 720.0;
-                                pointScale_1 = 0.9;
-                                float _e188 = d;
-                                float hue = metal::clamp(_e188, 0.0, 255.0) / 255.0;
-                                metal::float3 _e197 = hsvToRGB(metal::float3(hue, 0.19607843, 1.0));
-                                renderColor = _e197 * u.appearance.xyz;
-                                float sourceAlpha = metal::clamp(0.7 / metal::max(energy, 0.025), 0.018, 0.82);
-                                trailAlpha = sourceAlpha * metal::exp(-(static_cast<float>(trailID_1)) * 0.32);
                             }
                         }
                     }
@@ -350,40 +389,40 @@ ParticleSample particleSample(
             }
         }
     }
-    float _e214 = canvasSize;
-    float center = _e214 * 0.5;
-    float _e218 = pixel.x;
-    float _e222 = pixel.y;
-    p_2 = metal::float2((_e218 - center) / center, (center - _e222) / center);
+    float _e223 = canvasSize;
+    float center = _e223 * 0.5;
+    float _e227 = pixel.x;
+    float _e231 = pixel.y;
+    p_2 = metal::float2((_e227 - center) / center, (center - _e231) / center);
     float cz = metal::cos(u.rotation.z);
     float sz = metal::sin(u.rotation.z);
-    float _e234 = p_2.x;
-    float _e237 = p_2.y;
-    float _e241 = p_2.x;
-    float _e244 = p_2.y;
-    p_2 = metal::float2((_e234 * cz) - (_e237 * sz), (_e241 * sz) + (_e244 * cz));
-    metal::float2 _e255 = p_2;
-    p_2 = _e255 * (u.scale * metal::exp(u.position.z * 0.08));
+    float _e243 = p_2.x;
+    float _e246 = p_2.y;
+    float _e250 = p_2.x;
+    float _e253 = p_2.y;
+    p_2 = metal::float2((_e243 * cz) - (_e246 * sz), (_e250 * sz) + (_e253 * cz));
     metal::float2 _e264 = p_2;
-    p_2 = _e264 * metal::float2(metal::cos(u.rotation.y), metal::cos(u.rotation.x));
-    metal::float2 _e270 = p_2;
-    p_2 = _e270 + (u.position.xy * 0.25);
-    metal::float2 _e277 = p_2;
-    p_2 = _e277 * metal::max(metal::float2(0.05), u.screenFit.yz);
+    p_2 = _e264 * (u.scale * metal::exp(u.position.z * 0.08));
+    metal::float2 _e273 = p_2;
+    p_2 = _e273 * metal::float2(metal::cos(u.rotation.y), metal::cos(u.rotation.x));
+    metal::float2 _e279 = p_2;
+    p_2 = _e279 + (u.position.xy * 0.25);
+    metal::float2 _e286 = p_2;
+    p_2 = _e286 * metal::max(metal::float2(0.05), u.screenFit.yz);
     if (u.screenFit.x < 0.5) {
-        float _e287 = p_2.x;
-        p_2.x = _e287 / metal::max(0.1, u.aspect);
+        float _e296 = p_2.x;
+        p_2.x = _e296 / metal::max(0.1, u.aspect);
     }
-    metal::float2 _e291 = p_2;
-    out_2.clip = _e291;
-    float _e294 = pointScale_1;
-    out_2.pointSizePx = metal::max(1.0, u.pointSize * _e294);
+    metal::float2 _e300 = p_2;
+    out_2.clip = _e300;
+    float _e303 = pointScale_2;
+    out_2.pointSizePx = metal::max(1.0, u.pointSize * _e303);
     float brightness = metal::max(0.05, u.appearance.w);
-    metal::float3 _e303 = renderColor;
-    float _e310 = trailAlpha;
-    out_2.color = metal::float4(_e303 * brightness, metal::clamp(0.38 * brightness, 0.08, 1.0) * _e310);
-    ParticleSample _e313 = out_2;
-    return _e313;
+    metal::float3 _e312 = renderColor;
+    float _e319 = trailAlpha;
+    out_2.color = metal::float4(_e312 * brightness, metal::clamp(0.38 * brightness, 0.08, 1.0) * _e319);
+    ParticleSample _e322 = out_2;
+    return _e322;
 }
 
 struct vsMainInput {
@@ -448,17 +487,17 @@ kernel void flowUpdate(
 ) {
     metal::float4 state = {};
     uint slot = 0u;
-    uint id_6 = gid.x;
+    uint id_7 = gid.x;
     uint particleCount = flow.z;
     uint historyCount = flow.w;
-    if (id_6 >= particleCount) {
+    if (id_7 >= particleCount) {
         return;
     }
     uint frame = flow.x;
     uint first = naga_mod(frame * 9u, particleCount);
-    uint insertionOffset = naga_mod((id_6 + particleCount) - first, particleCount);
+    uint insertionOffset = naga_mod((id_7 + particleCount) - first, particleCount);
     bool spawned = insertionOffset < 9u;
-    metal::float4 _e22 = flowParticlesMut[id_6];
+    metal::float4 _e22 = flowParticlesMut[id_7];
     state = _e22;
     if (spawned) {
         uint newTick = ((frame * 9u) + insertionOffset) + 1u;
@@ -480,7 +519,7 @@ kernel void flowUpdate(
             }
             {
                 uint _e44 = slot;
-                flowHistoryMut[(id_6 * historyCount) + _e44] = metal::float4(0.0);
+                flowHistoryMut[(id_7 * historyCount) + _e44] = metal::float4(0.0);
             }
         }
     } else {
@@ -509,11 +548,11 @@ kernel void flowUpdate(
         state.y = _e102 + 0.5;
     }
     metal::float4 _e106 = state;
-    flowParticlesMut[id_6] = _e106;
+    flowParticlesMut[id_7] = _e106;
     uint historySlot = naga_mod(frame, historyCount);
     metal::float4 _e112 = state;
     float _e115 = state.w;
-    flowHistoryMut[(id_6 * historyCount) + historySlot] = metal::float4(_e112.xy, _e115, 1.0);
+    flowHistoryMut[(id_7 * historyCount) + historySlot] = metal::float4(_e112.xy, _e115, 1.0);
     return;
 }
 
@@ -528,17 +567,17 @@ kernel void graphPositionUpdate(
 , device type_4& graphPositions [[buffer(5)]]
 , constant _mslBufferSizes& _buffer_sizes [[buffer(6)]]
 ) {
-    uint id_7 = gid_1.x;
-    if (id_7 >= GRAPH_NODE_COUNT) {
+    uint id_8 = gid_1.x;
+    if (id_8 >= GRAPH_NODE_COUNT) {
         return;
     }
     float _e8 = u_1.model.w;
     uint sourceCount = metal::max(1u, naga_f2u32(_e8 + 0.5));
-    uint sourceID = metal::min(sourceCount - 1u, naga_f2u32((static_cast<float>(id_7) * static_cast<float>(sourceCount)) / 768.0));
+    uint sourceID = metal::min(sourceCount - 1u, naga_f2u32((static_cast<float>(id_8) * static_cast<float>(sourceCount)) / 768.0));
     Uniforms _e23 = u_1;
     ParticleSample _e24 = particleSample(sourceID, _e23, flowParticles, flowHistory, _buffer_sizes);
     bool visible = metal::all(metal::abs(_e24.clip) <= metal::float2(1.15)) && (_e24.color.w > 0.005);
-    graphPositions[id_7] = metal::float4(_e24.clip, visible ? _e24.color.w : 0.0, static_cast<float>(sourceID));
+    graphPositions[id_8] = metal::float4(_e24.clip, visible ? _e24.color.w : 0.0, static_cast<float>(sourceID));
     return;
 }
 
@@ -560,11 +599,11 @@ kernel void graphConnectionUpdate(
     uint bestID2_ = 4294967295u;
     uint candidate = {};
     uint slot_1 = 0u;
-    uint id_8 = gid_2.x;
-    if (id_8 >= GRAPH_NODE_COUNT) {
+    uint id_9 = gid_2.x;
+    if (id_9 >= GRAPH_NODE_COUNT) {
         return;
     }
-    metal::float4 source = graphPositions[id_8];
+    metal::float4 source = graphPositions[id_9];
     float _e10 = gu.graph.y;
     float threshold = metal::max(0.001, _e10);
     float thresholdSquared = threshold * threshold;
@@ -572,7 +611,7 @@ kernel void graphConnectionUpdate(
     bestDistance1_ = thresholdSquared;
     bestDistance2_ = thresholdSquared;
     if (source.z > 0.0) {
-        candidate = id_8 + 1u;
+        candidate = id_9 + 1u;
         uint2 loop_bound_2 = uint2(4294967295u);
         bool loop_init_1 = true;
         while(true) {
@@ -663,7 +702,7 @@ kernel void graphConnectionUpdate(
             uint _e93 = slot_1;
             float distanceSquared_1 = (_e93 == 0u) ? _e92 : ((_e88 == 1u) ? _e87 : _e86);
             uint _e99 = slot_1;
-            uint edge = ((id_8 * GRAPH_MAX_CONNECTIONS) + _e99) * 2u;
+            uint edge = ((id_9 * GRAPH_MAX_CONNECTIONS) + _e99) * 2u;
             uint _e103 = slot_1;
             if ((_e103 < requestedConnections) && (targetID != 4294967295u)) {
                 metal::float4 tgt_1 = graphPositions[targetID];

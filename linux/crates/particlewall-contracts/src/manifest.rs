@@ -7,6 +7,7 @@
 use serde::Deserialize;
 
 pub const MODULE_PARAMETRIC_WAVES: &str = "parametric-waves";
+pub const MODULE_SPHERE_TORUS: &str = "sphere-torus";
 pub const MODULE_WEB: &str = "web";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +21,7 @@ pub enum RendererKind {
     MetalPrimeSpiral,
     MetalTorusOrbit,
     MetalChromaticRings,
+    MetalSphereTorus,
 }
 
 impl RendererKind {
@@ -34,6 +36,7 @@ impl RendererKind {
             "metal-prime-spiral" => Self::MetalPrimeSpiral,
             "metal-torus-orbit" => Self::MetalTorusOrbit,
             "metal-chromatic-rings" => Self::MetalChromaticRings,
+            "metal-sphere-torus" => Self::MetalSphereTorus,
             _ => return None,
         })
     }
@@ -49,6 +52,7 @@ impl RendererKind {
             Self::MetalPrimeSpiral => "prime-spiral",
             Self::MetalTorusOrbit => "torus-orbit",
             Self::MetalChromaticRings => "chromatic-rings",
+            Self::MetalSphereTorus => MODULE_SPHERE_TORUS,
         }
     }
 }

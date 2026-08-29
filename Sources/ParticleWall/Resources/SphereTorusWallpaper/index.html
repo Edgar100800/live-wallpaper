@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<script>
+  // Canvas fallback and thumbnail source for the native sphere-torus ring.
+  const canvas = document.getElementById('canvas');
+  const context = canvas.getContext('2d', { alpha: false });
+  let t = 0;
+
+  function resize() {
+    const ratio = Math.min(window.devicePixelRatio || 1, 1.5);
+    canvas.width = Math.max(1, Math.round(innerWidth * ratio));
+    canvas.height = Math.max(1, Math.round(innerHeight * ratio));
+  }
+
+  function project(world, scaleX, scaleY) {
+    const eyeZ = 519.61524;
+    const perspective = eyeZ / Math.max(72, eyeZ - world[2]);
+    return [
+      (300 + world[0] * perspective) * scaleX,
+      (300 + world[1] * perspective) * scaleY,
+      perspective
+    ];
+  }
+
+  function draw() {
+    requestAnimationFrame(draw);
+    if (window.__pwPaused) return;
+    t = (t + 0.02) % 1;
+    const p = Math.PI / 40;
+    const r = 90;
+    context.fillStyle = window.__pwBackgroundColor || '#000';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    const scaleX = canvas.width / 600;
+    const scaleY = canvas.height / 600;
+    context.fillStyle = window.__pwParticleColor || 'rgba(255,255,255,0.72)';
+    // rotateX(.5) then rotateY(-.5): model matrix Rx * Ry.
+    const cx = Math.cos(0.5), sx = Math.sin(0.5);
+    const cy = Math.cos(-0.5), sy = Math.sin(-0.5);
+    for (let y = 40; y--;) {
+      for (let x = 80; x--;) {
+        const v = (y + t) * p * 2;
+        const u = (x + t) * p;
+        const ring = 2 + Math.sin(v);
+        let lx = ring * Math.cos(u) * r;
+        let ly = ring * Math.sin(u) * r;
+        let lz = Math.cos(v) * r;
+        // rotateY(-.5) first, then rotateX(.5).
+        let x1 = lx * cy + lz * sy;
+        let z1 = -lx * sy + lz * cy;
+        let y2 = ly * cx - z1 * sx;
+        let z2 = ly * sx + z1 * cx;
+        const [px, py, persp] = project([x1, y2, z2], scaleX, scaleY);
+        const radius = Math.max(0.6, (Math.cos(v) + 0.3) * 3.2 * persp);
+        context.beginPath();
+        context.arc(px, py, radius, 0, Math.PI * 2);
+        context.fill();
+      }
+    }
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  draw();
+</script>
+</body>
+</html>

@@ -41,7 +41,10 @@ final class LibraryManager: ObservableObject {
               renderer: .metalTorusOrbit),
         .init(name: "Anillos Cromáticos",
               resourceName: "ChromaticRingsWallpaper",
-              renderer: .metalChromaticRings)
+              renderer: .metalChromaticRings),
+        .init(name: "Toro de Esferas",
+              resourceName: "SphereTorusWallpaper",
+              renderer: .metalSphereTorus)
     ]
 
     private init() {

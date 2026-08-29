@@ -232,6 +232,37 @@ pub fn torus_orbit_pixel(id: u32, engine_time: f32, point_scale: &mut f32) -> [f
     [200.0 + world[0] * perspective, 200.0 + world[1] * perspective]
 }
 
+/// Toro de Esferas (600px canvas). Ring of spheres with breathing radius;
+/// returns the pixel position and updates `point_scale` (cos(v)+0.3).
+pub fn sphere_torus_pixel(id: u32, engine_time: f32, point_scale: &mut f32) -> [f32; 2] {
+    let t = engine_time % 1.0;
+    let p = 0.078539816f32; // PI/40
+    let y = id / 80;
+    let x = id % 80;
+    let v = (y as f32 + t) * p * 2.0;
+    let u = (x as f32 + t) * p;
+    let r = 90.0;
+    let ring = 2.0 + v.sin();
+    let mut local = [
+        ring * u.cos() * r,
+        ring * u.sin() * r,
+        v.cos() * r,
+    ];
+
+    // p5 applies rotateX(.5) then rotateY(-.5); the model matrix is Rx * Ry,
+    // so rotateY lands on the point first.
+    let (cy, sy) = ((-0.5f32).cos(), (-0.5f32).sin());
+    local = [local[0] * cy + local[2] * sy, local[1], -local[0] * sy + local[2] * cy];
+    let (cx, sx) = (0.5f32.cos(), 0.5f32.sin());
+    local = [local[0], local[1] * cx - local[2] * sx, local[1] * sx + local[2] * cx];
+
+    // p5 default WEBGL camera for a 600px canvas: 300 / tan(PI/6).
+    let eye_z = 519.61524;
+    let perspective = eye_z / (eye_z - local[2]).max(72.0);
+    *point_scale = (v.cos() + 0.3).max(0.1);
+    [300.0 + local[0] * perspective, 300.0 + local[1] * perspective]
+}
+
 /// Full shared-canvas transform, mirroring the WGSL block. Returns
 /// `[clip_x, clip_y, point_size_px, r, g, b, a]`.
 pub fn model_sample(id: u32, model: u32, u: &Uniforms, flow: &FlowState) -> [f32; 7] {
@@ -280,6 +311,12 @@ pub fn model_sample(id: u32, model: u32, u: &Uniforms, flow: &FlowState) -> [f32
         }
         6 => {
             pixel = torus_orbit_pixel(id, u.time * 0.3, &mut point_scale);
+        }
+        8 => {
+            // t wraps every unit in the source dweet.
+            let t = u.time * 1.2;
+            pixel = sphere_torus_pixel(id, t, &mut point_scale);
+            canvas_size = 600.0;
         }
         _ => {
             let trail_count = 8u32;

@@ -21,6 +21,7 @@ let package = Package(
                 .copy("Resources/PrimeSpiralWallpaper"),
                 .copy("Resources/TorusOrbitWallpaper"),
                 .copy("Resources/ChromaticRingsWallpaper"),
+                .copy("Resources/SphereTorusWallpaper"),
                 .copy("Resources/generated")
             ]
         ),

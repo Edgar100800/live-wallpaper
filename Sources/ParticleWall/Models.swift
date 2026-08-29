@@ -10,6 +10,7 @@ enum WallpaperRendererKind: String, Codable, CaseIterable {
     case metalPrimeSpiral = "metal-prime-spiral"
     case metalTorusOrbit = "metal-torus-orbit"
     case metalChromaticRings = "metal-chromatic-rings"
+    case metalSphereTorus = "metal-sphere-torus"
 
     var isNativeMetal: Bool { self != .web }
 
