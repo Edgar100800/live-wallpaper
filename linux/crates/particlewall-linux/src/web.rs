@@ -35,9 +35,22 @@ use tray::ParticleWallTray;
 
 pub(crate) const DEFAULT_FPS_CAP: u32 = 30;
 
-/// Bundled wallpaper id served by the shared GPU module (M1: one module).
+/// Bundled wallpaper id -> shared GPU model index (particle-v1 engine).
+/// Mirrors LibraryManager.bundledWallpaperSpecs on macOS.
 #[cfg(feature = "gpu")]
-const GPU_WALLPAPER_ID: &str = "DefaultWallpaper";
+fn gpu_model_for(wallpaper_id: &str) -> Option<u32> {
+    Some(match wallpaper_id {
+        "DefaultWallpaper" => 0,
+        "TwinVortexWallpaper" => 1,
+        "OrbitalBloomWallpaper" => 2,
+        "HexagonalRosetteWallpaper" => 3,
+        "NoiseRainWallpaper" => 4,
+        "PrimeSpiralWallpaper" => 5,
+        "TorusOrbitWallpaper" => 6,
+        "ChromaticRingsWallpaper" => 7,
+        _ => return None,
+    })
+}
 
 /// Repo-relative location of the shared JS contract scripts.
 fn shared_script(name: &str) -> String {
@@ -124,6 +137,8 @@ mod gpu {
 
     pub struct GpuOutput {
         pub id: String,
+        /// Shared particle-v1 model index (0..8).
+        pub model: u32,
         pub presenter: GpuPresenter,
         pub size_px: (f32, f32),
         /// Keepalive for the dedicated Wayland surface feeding `presenter`.
@@ -178,7 +193,12 @@ mod gpu {
                 self.particle[2],
                 self.brightness,
             ];
-            u.model = [0.0, 0.0, 12.0, Uniforms::VERTEX_COUNT_MODEL0 as f32];
+            u.model = [
+                out.model as f32,
+                out.presenter.latest_flow_slot(),
+                12.0,
+                Uniforms::model_vertex_count(out.model) as f32,
+            ];
             u
         }
 
@@ -200,7 +220,7 @@ mod gpu {
                     let aspect = out.size_px.0 / out.size_px.1.max(1.0);
                     (self.uniforms_for(out, aspect), self.background)
                 };
-                self.outputs[i].presenter.render(&u, background);
+                self.outputs[i].presenter.render(&u, background, delta * self.speed);
             }
         }
     }
@@ -227,7 +247,7 @@ fn switch_renderer(
     wallpaper_id: &str,
 ) -> String {
     #[cfg(feature = "gpu")]
-    let gpu_capable = wallpaper_id == GPU_WALLPAPER_ID;
+    let gpu_capable = gpu_model_for(wallpaper_id).is_some();
 
     #[cfg(not(feature = "gpu"))]
     let gpu_capable = false;
@@ -265,23 +285,50 @@ fn switch_renderer(
             },
         };
 
+        let model = gpu_model_for(wallpaper_id).unwrap_or(0);
         let mut outputs: Vec<gpu::GpuOutput> = Vec::new();
         let mut gpu_err: Option<String> = None;
         if let Some(wl) = wl {
             for name in wl.output_names() {
-                // Reuse a parked presenter when one exists for this output.
-                // Parked surfaces stay mapped (frozen frame) and hidden
-                // behind the GTK web windows; z-order = map order.
-                let parked_idx = gpu_rt.borrow().parked.iter().position(|p| p.id == name);
-                if let Some(idx) = parked_idx {
-                    let out = gpu_rt.borrow_mut().parked.remove(idx);
-                    println!("pw: GPU renderer resumed on {name}");
+                // Presenters are permanent per-output resources (the NVIDIA
+                // Wayland WSI cannot host a second swapchain on the same
+                // connection). Reuse an active presenter first, then a
+                // parked one, reconfiguring its model in place; only build
+                // brand-new surfaces when none exists for this output.
+                let active = {
+                    let mut rt = gpu_rt.borrow_mut();
+                    rt.outputs.iter().position(|p| p.id == name).map(|idx| rt.outputs.remove(idx))
+                };
+                let reused = match active {
+                    Some(mut out) => {
+                        if out.model != model {
+                            out.presenter.set_model(model);
+                            out.model = model;
+                        }
+                        println!("pw: GPU renderer reconfigured on {name}");
+                        Some(out)
+                    }
+                    None => {
+                        let parked_idx =
+                            gpu_rt.borrow().parked.iter().position(|p| p.id == name);
+                        parked_idx.map(|idx| {
+                            let mut out = gpu_rt.borrow_mut().parked.remove(idx);
+                            if out.model != model {
+                                out.presenter.set_model(model);
+                                out.model = model;
+                            }
+                            println!("pw: GPU renderer resumed on {name}");
+                            out
+                        })
+                    }
+                };
+                if let Some(out) = reused {
                     outputs.push(out);
                     continue;
                 }
                 let built = wl.create_surface(&name).and_then(|session| {
                     let size = session.size_px;
-                    gpu::GpuPresenter::new(session.handles(), size)
+                    gpu::GpuPresenter::new(session.handles(), size, model)
                         .map(|presenter| (session, presenter))
                         .map_err(|e| e.to_string())
                 });
@@ -290,8 +337,9 @@ fn switch_renderer(
                         println!("pw: GPU renderer on {name}");
                         outputs.push(gpu::GpuOutput {
                             id: name.clone(),
-                            size_px: (session.size_px.0 as f32, session.size_px.1 as f32),
+                            model,
                             presenter,
+                            size_px: (session.size_px.0 as f32, session.size_px.1 as f32),
                             session,
                         });
                     }

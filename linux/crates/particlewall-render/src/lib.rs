@@ -33,6 +33,22 @@ pub struct Uniforms {
 impl Uniforms {
     pub const VERTEX_COUNT_MODEL0: u32 = 10_000;
 
+    /// Instance (particle) count per model index, mirroring Swift vertexCount.
+    pub const MODEL_VERTEX_COUNTS: [u32; 8] = [
+        10_000,             // 0 parametric-waves
+        30_000,             // 1 twin-vortex
+        30_000,             // 2 orbital-bloom
+        19_993 * 6,         // 3 hexagonal-rosette
+        720 * 9 * 12,       // 4 noise-rain
+        78_498,             // 5 prime-spiral
+        512 + 64 * 96 * 6,  // 6 torus-orbit
+        6_225 * 8,          // 7 chromatic-rings
+    ];
+
+    pub fn model_vertex_count(model: u32) -> u32 {
+        Self::MODEL_VERTEX_COUNTS[(model as usize).min(7)]
+    }
+
     pub fn defaults(aspect: f32, viewport_px: [f32; 2]) -> Self {
         Self {
             time: 0.0,
