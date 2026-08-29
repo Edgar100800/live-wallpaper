@@ -4,7 +4,7 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use super::control::{CmdTx, Command, PlaybackFlags};
+use super::control::{CmdTx, Command, PlaybackFlags, PARTICLE_SIZE_RANGE};
 use ksni::menu::{MenuItem, StandardItem, SubMenu};
 use ksni::{Tray, ToolTip};
 
@@ -15,6 +15,9 @@ pub struct ParticleWallTray {
     pub current: Arc<std::sync::Mutex<String>>,
     /// Saved profile names, shared with DaemonState.
     pub profiles: Arc<std::sync::Mutex<Vec<String>>>,
+    /// Live appearance, shared with DaemonState (marks the current
+    /// size/brightness in the menus).
+    pub appearance: Arc<std::sync::Mutex<crate::web::library::ColorSettings>>,
 }
 
 impl ParticleWallTray {
@@ -25,6 +28,25 @@ impl ParticleWallTray {
 
     fn is_paused(&self) -> bool {
         self.flags.effective_paused()
+    }
+
+    /// Scroll over the tray icon: size step up/down with live application
+    /// (the tray-menu protocol has no sliders; this is the quick path).
+    fn scroll_size(&self, delta: i32) {
+        let current = self
+            .appearance
+            .lock()
+            .unwrap()
+            .size
+            .unwrap_or(1.6);
+        let step = if delta > 0 { 0.1 } else { -0.1 };
+        let next = (current + step).clamp(PARTICLE_SIZE_RANGE.0, PARTICLE_SIZE_RANGE.1);
+        if (next - current).abs() >= f64::EPSILON {
+            self.send(Command::SetColors(crate::web::library::ColorSettings {
+                size: Some(next),
+                ..Default::default()
+            }));
+        }
     }
 }
 
@@ -63,10 +85,18 @@ impl Tray for ParticleWallTray {
         }
     }
 
+    fn scroll(&mut self, delta: i32, _orientation: ksni::Orientation) {
+        self.scroll_size(delta);
+    }
+
     fn menu(&self) -> Vec<MenuItem<Self>> {
         let paused = self.is_paused();
         let fps = self.flags.fps_cap.load(Ordering::Relaxed);
         let current = self.current.lock().unwrap().clone();
+        let (size, brightness) = {
+            let a = self.appearance.lock().unwrap();
+            (a.size.unwrap_or(1.6), a.brightness.unwrap_or(1.5))
+        };
 
         // Wallpaper picker (bundled HTML fallbacks of the eight GPU models).
         let mut wallpapers: Vec<MenuItem<Self>> = crate::web::library::bundled()
@@ -82,6 +112,52 @@ impl Tray for ParticleWallTray {
                 })
             })
             .collect();
+        wallpapers.push(MenuItem::Separator);
+
+        // Size + brightness presets (sliders live in the settings window).
+        let size_items: Vec<MenuItem<Self>> = [0.5f64, 1.0, 1.6, 2.5, 4.0]
+            .into_iter()
+            .map(|value| {
+                let check = if (value - size).abs() < 0.026 { "  [x] " } else { "  [ ] " };
+                MenuItem::Standard(StandardItem {
+                    label: format!("{check}{value:.1}x"),
+                    activate: Box::new(move |t: &mut Self| {
+                        t.send(Command::SetColors(crate::web::library::ColorSettings {
+                            size: Some(value),
+                            ..Default::default()
+                        }));
+                    }),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        wallpapers.push(MenuItem::SubMenu(SubMenu {
+            label: format!("Tamaño de puntos ({size:.2}x) — scroll en el ícono"),
+            submenu: size_items,
+            ..Default::default()
+        }));
+
+        let bright_items: Vec<MenuItem<Self>> = [0.25f64, 0.5, 1.5, 3.0, 6.0, 10.0]
+            .into_iter()
+            .map(|value| {
+                let check = if (value - brightness).abs() < 0.026 { "  [x] " } else { "  [ ] " };
+                MenuItem::Standard(StandardItem {
+                    label: format!("{check}{value}"),
+                    activate: Box::new(move |t: &mut Self| {
+                        t.send(Command::SetColors(crate::web::library::ColorSettings {
+                            brightness: Some(value),
+                            ..Default::default()
+                        }));
+                    }),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        wallpapers.push(MenuItem::SubMenu(SubMenu {
+            label: format!("Intensidad de puntos ({brightness:.2})"),
+            submenu: bright_items,
+            ..Default::default()
+        }));
         wallpapers.push(MenuItem::Separator);
 
         // Saved color profiles.
@@ -109,8 +185,9 @@ impl Tray for ParticleWallTray {
         };
         profile_items.push(MenuItem::Separator);
         profile_items.push(MenuItem::Standard(StandardItem {
-            label: "Abrir ajustes (--set-color)".into(),
-            enabled: false,
+            label: "Ajustes… (sliders con vista previa)".into(),
+            icon_name: "preferences-desktop".into(),
+            activate: Box::new(|t: &mut Self| t.send(Command::OpenSettings)),
             ..Default::default()
         }));
         wallpapers.push(MenuItem::SubMenu(SubMenu {

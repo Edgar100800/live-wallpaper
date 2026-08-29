@@ -34,6 +34,8 @@ pub enum Command {
     SaveProfile(String),
     DeleteProfile(String),
     ApplyProfile(String),
+    /// Open (or raise) the GTK settings window.
+    OpenSettings,
     Status,
     Quit,
 }
@@ -53,6 +55,7 @@ impl Command {
             "profile-save" => Some(Self::SaveProfile(v.get("name")?.as_str()?.into())),
             "profile-delete" => Some(Self::DeleteProfile(v.get("name")?.as_str()?.into())),
             "profile-apply" => Some(Self::ApplyProfile(v.get("name")?.as_str()?.into())),
+            "open-settings" => Some(Self::OpenSettings),
             "status" => Some(Self::Status),
             "quit" => Some(Self::Quit),
             _ => None,
@@ -101,6 +104,8 @@ pub struct DaemonState {
     pub current: Option<Arc<std::sync::Mutex<String>>>,
     /// Shared with the tray: saved profile names for its submenu.
     pub profiles_ui: Option<Arc<std::sync::Mutex<Vec<String>>>>,
+    /// Shared with the tray + settings window: the live appearance.
+    pub appearance_ui: Option<Arc<std::sync::Mutex<library::ColorSettings>>>,
     #[allow(clippy::type_complexity)]
     pub tray: Option<ksni::blocking::Handle<ParticleWallTray>>,
     /// Layer windows per output; renderers attach children to these.
@@ -114,23 +119,41 @@ pub struct DaemonState {
     /// Live output-count hook (GPU-aware), set by the host.
     #[cfg(feature = "gpu")]
     pub output_count: Option<std::rc::Rc<dyn Fn() -> usize>>,
+    /// Opens (or raises) the settings window with the given initial values;
+    /// set by the host on the GTK main loop. Values are passed as arguments
+    /// because the applier invokes it under an active state borrow.
+    pub open_settings: Option<std::rc::Rc<dyn Fn(f64, f64)>>,
+}
+
+/// Wire ranges mirroring the macOS control descriptors: "Tamaño" 0.5-4 and
+/// "Intensidad de puntos" 0.25-10.
+pub const PARTICLE_SIZE_RANGE: (f64, f64) = (0.5, 4.0);
+pub const BRIGHTNESS_RANGE: (f64, f64) = (0.25, 10.0);
+
+fn appearance_js_parts(colors: &library::ColorSettings) -> Vec<String> {
+    let mut parts = Vec::new();
+    if let Some(b) = colors.background {
+        parts.push(format!("backgroundColor:{b}"));
+    }
+    if let Some(p) = colors.particle {
+        parts.push(format!("particleColor:{p}"));
+    }
+    if let Some(s) = colors.size {
+        let s = s.clamp(PARTICLE_SIZE_RANGE.0, PARTICLE_SIZE_RANGE.1);
+        parts.push(format!("particleSize:{s}"));
+    }
+    if let Some(w) = colors.brightness {
+        let w = w.clamp(BRIGHTNESS_RANGE.0, BRIGHTNESS_RANGE.1);
+        parts.push(format!("brightness:{w}"));
+    }
+    parts
 }
 
 impl DaemonState {
     /// JS snippet applying the current appearance through the shared
     /// wallpaper contract. None when nothing is set.
     pub fn colors_js(&self) -> Option<String> {
-        let mut parts = Vec::new();
-        if let Some(b) = self.colors.background {
-            parts.push(format!("backgroundColor:{b}"));
-        }
-        if let Some(p) = self.colors.particle {
-            parts.push(format!("particleColor:{p}"));
-        }
-        if let Some(s) = self.colors.size {
-            let s = s.clamp(0.1, 10.0);
-            parts.push(format!("particleSize:{s}"));
-        }
+        let parts = appearance_js_parts(&self.colors);
         if parts.is_empty() {
             return None;
         }
@@ -140,22 +163,13 @@ impl DaemonState {
         ))
     }
 
-    fn push_colors(&self) {
+    fn push_colors(&mut self) {
+        self.sync_appearance_ui();
         #[cfg(feature = "gpu")]
         if let Some(hook) = &self.on_colors {
             hook(&self.colors);
         }
-        let mut parts = Vec::new();
-        if let Some(b) = self.colors.background {
-            parts.push(format!("backgroundColor:{b}"));
-        }
-        if let Some(p) = self.colors.particle {
-            parts.push(format!("particleColor:{p}"));
-        }
-        if let Some(s) = self.colors.size {
-            let s = s.clamp(0.1, 10.0);
-            parts.push(format!("particleSize:{s}"));
-        }
+        let parts = appearance_js_parts(&self.colors);
         if parts.is_empty() {
             return;
         }
@@ -165,6 +179,14 @@ impl DaemonState {
         );
         for (_, wv) in &self.webviews {
             wv.evaluate_javascript(&js, None, None, None::<&gtk4::gio::Cancellable>, |_| {});
+        }
+    }
+
+    /// Mirrors the current appearance into the shared view used by the tray
+    /// menu and the settings window.
+    fn sync_appearance_ui(&self) {
+        if let Some(ui) = &self.appearance_ui {
+            *ui.lock().unwrap() = self.colors.clone();
         }
     }
 
@@ -229,6 +251,7 @@ impl DaemonState {
             // under this borrow_mut.
             Command::Apply(_) => "{\"error\":\"internal: apply misrouted\"}\n".into(),
             Command::SetColors(new_colors) => {
+                let before = self.colors.clone();
                 if new_colors.background.is_some() {
                     self.colors.background = new_colors.background;
                 }
@@ -238,8 +261,15 @@ impl DaemonState {
                 if new_colors.size.is_some() {
                     self.colors.size = new_colors.size;
                 }
-                self.push_colors();
-                self.persist();
+                if new_colors.brightness.is_some() {
+                    self.colors.brightness = new_colors.brightness;
+                }
+                // Slider dragging floods this command: skip no-op updates so
+                // config.json is not rewritten for every tick.
+                if self.colors != before {
+                    self.push_colors();
+                    self.persist();
+                }
                 format!("{{\"colors\":{}}}\n", serde_json::to_string(&self.colors).unwrap())
             }
             Command::SaveProfile(name) => {
@@ -275,6 +305,23 @@ impl DaemonState {
                     None => format!("{{\"error\":\"unknown profile '{name}'\"}}\n"),
                 }
             }
+            Command::OpenSettings => match &self.open_settings {
+                Some(open) => {
+                    let size = self
+                        .colors
+                        .size
+                        .unwrap_or(1.6)
+                        .clamp(PARTICLE_SIZE_RANGE.0, PARTICLE_SIZE_RANGE.1);
+                    let brightness = self
+                        .colors
+                        .brightness
+                        .unwrap_or(1.5)
+                        .clamp(BRIGHTNESS_RANGE.0, BRIGHTNESS_RANGE.1);
+                    open(size, brightness);
+                    "ok\n".into()
+                }
+                None => "{\"error\":\"settings window unavailable\"}\n".into(),
+            },
             Command::Status => {
                 #[cfg(feature = "gpu")]
                 let outputs = self
@@ -291,7 +338,7 @@ impl DaemonState {
     }
 }
 
-type SharedState = Rc<RefCell<DaemonState>>;
+pub type SharedState = Rc<RefCell<DaemonState>>;
 pub type CmdTx = async_channel::Sender<(Option<UnixStream>, Command)>;
 
 /// Web-only fallback when no renderer switch hook is installed (gpu feature

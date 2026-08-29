@@ -71,6 +71,9 @@ pub struct ColorSettings {
     pub particle: Option<u32>,
     #[serde(rename = "particleSize", default, skip_serializing_if = "Option::is_none")]
     pub size: Option<f64>,
+    /// "Intensidad de puntos" on macOS (appearance.w). None = model default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brightness: Option<f64>,
 }
 
 /// A saved background+particle pair, mirroring macOS color profiles.

@@ -9,6 +9,7 @@
 //!   particlewall --list       list available wallpapers
 //!   particlewall --apply <id|nombre>   switch wallpaper live
 //!   particlewall --set-color background=#0a0a1a --set-color particle=#7ee0c0
+//!   particlewall --set-color size=2.5 --set-color brightness=3
 //!   particlewall --profile-save "Nombre"     save current colors as profile
 //!   particlewall --profile-apply "Nombre"    apply a saved profile
 //!   particlewall --profile-delete "Nombre"
@@ -22,6 +23,8 @@ mod web;
 mod control;
 #[cfg(all(feature = "web", feature = "power"))]
 mod power;
+#[cfg(feature = "web")]
+mod settings;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -66,11 +69,11 @@ fn profile_cmd(kind: &str, args: &[String]) -> String {
 }
 
 /// Parses "#RRGGBB", "RRGGBB" or a plain integer into the wire value the
-/// wallpaper contract expects (packed RGB integer; float for size).
+/// wallpaper contract expects (packed RGB integer; float for size/brightness).
 fn parse_color_value(value: &str, wire: &str) -> serde_json::Value {
-    if wire == "particleSize" {
+    if wire == "particleSize" || wire == "brightness" {
         return serde_json::json!(value.parse::<f64>().unwrap_or_else(|_| {
-            eprintln!("size must be a number, got '{value}'");
+            eprintln!("{wire} must be a number, got '{value}'");
             std::process::exit(64);
         }));
     }
@@ -89,6 +92,7 @@ fn cli_command(args: &[String]) -> Option<CliAction> {
         Some("--pause") => Some(CliAction::Send(r#"{"cmd":"pause"}"#.into())),
         Some("--resume") => Some(CliAction::Send(r#"{"cmd":"resume"}"#.into())),
         Some("--toggle") => Some(CliAction::Send(r#"{"cmd":"toggle"}"#.into())),
+        Some("--settings") => Some(CliAction::Send(r#"{"cmd":"open-settings"}"#.into())),
         Some("--status") => Some(CliAction::Send(r#"{"cmd":"status"}"#.into())),
         Some("--fps") => {
             let v = args.get(1).expect("--fps requires a value (0 = unlimited)");
@@ -131,8 +135,11 @@ fn cli_command(args: &[String]) -> Option<CliAction> {
                     "background" | "bg" => "backgroundColor",
                     "particle" | "fg" => "particleColor",
                     "size" | "particlesize" => "particleSize",
+                    "brightness" | "intensity" => "brightness",
                     other => {
-                        eprintln!("unknown color key '{other}' (background|particle|size)");
+                        eprintln!(
+                            "unknown color key '{other}' (background|particle|size|brightness)"
+                        );
                         std::process::exit(64);
                     }
                 };

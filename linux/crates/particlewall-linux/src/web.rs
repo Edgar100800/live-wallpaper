@@ -179,7 +179,11 @@ mod gpu {
                 self.particle = packed_to_rgba01(p)[..3].try_into().unwrap();
             }
             if let Some(s) = colors.size {
-                self.particle_size = s as f32;
+                self.particle_size =
+                    (s as f32).clamp(0.5, 4.0);
+            }
+            if let Some(w) = colors.brightness {
+                self.brightness = (w as f32).clamp(0.25, 10.0);
             }
         }
 
@@ -488,6 +492,8 @@ pub fn run() {
         let profiles_ui = Arc::new(std::sync::Mutex::new(
             cfg.profiles.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
         ));
+        let appearance_ui =
+            Arc::new(std::sync::Mutex::new(cfg.colors.clone()));
 
         let state = Rc::new(RefCell::new(control::DaemonState {
             webviews: Vec::new(),
@@ -497,11 +503,13 @@ pub fn run() {
             profiles: cfg.profiles.clone(),
             current: Some(current_id.clone()),
             profiles_ui: Some(profiles_ui.clone()),
+            appearance_ui: Some(appearance_ui.clone()),
             tray: None,
             windows: Vec::new(),
             switch: None,
             on_colors: None,
             output_count: None,
+            open_settings: None,
         }));
 
         let gpu_rt = Rc::new(RefCell::new(gpu::GpuRuntime {
@@ -513,7 +521,7 @@ pub fn run() {
                 .try_into()
                 .unwrap(),
             particle_size: cfg.colors.size.unwrap_or(1.6) as f32,
-            brightness: 1.5,
+            brightness: cfg.colors.brightness.unwrap_or(1.5) as f32,
             speed: 1.0,
             ..Default::default()
         }));
@@ -527,7 +535,7 @@ pub fn run() {
             }));
         }
 
-        // Appearance hook: colors/size also reach the GPU runtime.
+        // Appearance hook: colors/size/brightness also reach the GPU runtime.
         #[cfg(feature = "gpu")]
         {
             let rt = gpu_rt.clone();
@@ -553,6 +561,15 @@ pub fn run() {
 
         // Command bus shared by the CLI socket and the tray menu.
         let (tx, rx): (CmdTx, _) = async_channel::unbounded();
+
+        // Settings window hook (GTK main loop). Values are passed as
+        // arguments: the applier runs it under an active state borrow.
+        {
+            let tx_settings = tx.clone();
+            state.borrow_mut().open_settings = Some(Rc::new(move |size, brightness| {
+                crate::settings::open(size, brightness, tx_settings.clone());
+            }));
+        }
 
         // Power monitor (logind/UPower/Hyprland): pushes the deterministic
         // policy into the shared flags and syncs the web renderer on change.
@@ -582,6 +599,7 @@ pub fn run() {
             tx: tx.clone(),
             current: current_id.clone(),
             profiles: profiles_ui.clone(),
+            appearance: appearance_ui.clone(),
         }
         .spawn();
         match tray_result {
