@@ -62,9 +62,13 @@ impl Command {
 
 /// Mirrors playback state for threads outside the GTK main thread
 /// (the tray service reads these when refreshing its icon).
+/// `paused` is the USER pause (CLI/tray); `system_paused` is set by the
+/// power monitor (lock/sleep/fullscreen, FR-PWR-05). Playback is active
+/// only when both are clear.
 #[derive(Clone)]
 pub struct PlaybackFlags {
     pub paused: Arc<AtomicBool>,
+    pub system_paused: Arc<AtomicBool>,
     pub fps_cap: Arc<AtomicU32>,
 }
 
@@ -72,8 +76,16 @@ impl Default for PlaybackFlags {
     fn default() -> Self {
         Self {
             paused: Arc::new(AtomicBool::new(false)),
+            system_paused: Arc::new(AtomicBool::new(false)),
             fps_cap: Arc::new(AtomicU32::new(DEFAULT_FPS_CAP)),
         }
+    }
+}
+
+impl PlaybackFlags {
+    /// Effective playback pause: user OR system policy.
+    pub fn effective_paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed) || self.system_paused.load(Ordering::Relaxed)
     }
 }
 
@@ -158,7 +170,8 @@ impl DaemonState {
 
     fn status_reply(&self, outputs: usize) -> String {
         let body = serde_json::json!({
-            "paused": self.flags.paused.load(Ordering::Relaxed),
+            "paused": self.flags.effective_paused(),
+            "systemPaused": self.flags.system_paused.load(Ordering::Relaxed),
             "fpsCap": self.flags.fps_cap.load(Ordering::Relaxed),
             "outputs": outputs,
             "wallpaper": self.wallpaper,

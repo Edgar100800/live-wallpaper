@@ -20,6 +20,8 @@ mod layer;
 mod web;
 #[cfg(feature = "web")]
 mod control;
+#[cfg(all(feature = "web", feature = "power"))]
+mod power;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();

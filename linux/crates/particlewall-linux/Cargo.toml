@@ -23,11 +23,13 @@ particlewall-render = { path = "../particlewall-render", optional = true }
 serde_json = "1"
 async-channel = "2"
 ksni = { version = "0.3", features = ["blocking"] }
+zbus = { version = "5", optional = true, default-features = false, features = ["blocking-api"] }
 serde = { version = "1.0.229", features = ["derive"] }
 wayland-client = { version = "0.31", optional = true, features = ["system", "dlopen"] }
 wayland-protocols-wlr = { version = "0.3", optional = true, features = ["client"] }
 
 [features]
-default = ["web", "gpu"]
+default = ["web", "gpu", "power"]
 web = ["dep:webkit6", "dep:gdk4-wayland"]
+power = ["dep:zbus"]
 gpu = ["dep:particlewall-render", "dep:gdk4-wayland", "dep:wayland-client", "dep:wayland-protocols-wlr"]

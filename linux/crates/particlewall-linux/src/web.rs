@@ -412,7 +412,7 @@ fn spawn_web_child(
     let webview = WebView::builder().build();
     attach_scripts(
         &webview,
-        state.borrow().flags.paused.load(std::sync::atomic::Ordering::Relaxed),
+        state.borrow().flags.effective_paused(),
         state.borrow().flags.fps_cap.load(std::sync::atomic::Ordering::Relaxed),
     );
     webview.set_background_color(&gtk_gdk::RGBA::BLACK);
@@ -449,7 +449,7 @@ fn start_gpu_loop(
 ) {
     glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
         let fps = state.borrow().flags.fps_cap.load(std::sync::atomic::Ordering::Relaxed);
-        let paused = state.borrow().flags.paused.load(std::sync::atomic::Ordering::Relaxed);
+        let paused = state.borrow().flags.effective_paused();
         // Skip work when paused; re-check interval needs are handled by the
         // 16ms cadence (cheap when idle: no GPU submission).
         let _ = fps;
@@ -552,6 +552,28 @@ pub fn run() {
 
         // Command bus shared by the CLI socket and the tray menu.
         let (tx, rx): (CmdTx, _) = async_channel::unbounded();
+
+        // Power monitor (logind/UPower/Hyprland): pushes the deterministic
+        // policy into the shared flags and syncs the web renderer on change.
+        #[cfg(feature = "power")]
+        {
+            let (ptx, prx) = async_channel::unbounded::<()>();
+            crate::power::PowerMonitor::start(flags.system_paused.clone(), ptx);
+            let st = state.clone();
+            glib::spawn_future_local(async move {
+                while prx.recv().await.is_ok() {
+                    let paused = st.borrow().flags.effective_paused();
+                    let js = format!("window.__pwPaused = {paused}");
+                    let webviews: Vec<WebView> = {
+                        let st = st.borrow();
+                        st.webviews.iter().map(|(_, wv)| wv.clone()).collect()
+                    };
+                    for wv in &webviews {
+                        wv.evaluate_javascript(&js, None, None, None::<&gtk4::gio::Cancellable>, |_| {});
+                    }
+                }
+            });
+        }
 
         // System tray in the top bar (volume/bluetooth area).
         let tray_result = ParticleWallTray {

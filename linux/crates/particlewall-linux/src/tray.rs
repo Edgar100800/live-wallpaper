@@ -24,7 +24,7 @@ impl ParticleWallTray {
     }
 
     fn is_paused(&self) -> bool {
-        self.flags.paused.load(Ordering::Relaxed)
+        self.flags.effective_paused()
     }
 }
 
