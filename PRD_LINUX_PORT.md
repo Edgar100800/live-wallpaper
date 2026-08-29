@@ -609,7 +609,7 @@ Esta tabla debe actualizarse al completar cada fase.
 | M1 - Primer modulo compartido | Completado | particle.wgsl (particle-v1) + modulo parametric-waves + crate particlewall-render (uniforms 128B, referencia CPU, presenter wgpu, tests de paridad CPU-GPU en verde); wallpaper GPU aplicado y verificado visualmente en vivo | 2026-08-28 |
 | M2 - Ocho fondos GPU | Completado (grafo compartido implementado; pendiente UI de controles de grafo) | particle.wgsl con 8 modelos + flowUpdate + grafo; fixtures y contratos FR-GPU-06..09 en verde; ciclo completo de 8 fondos verificado en vivo sin caídas (NVIDIA WSI: presenters permanentes reconfigurados in-place) | 2026-08-28 |
 | M3 - Daemon funcional | En curso adelantado (multi-output + CLI listos; faltan persistencia, importador y biblioteca) | linux/crates/particlewall-linux | 2026-08-25 |
-| M4 - Energia y deep sleep | Pendiente | - | - |
+| M4 - Energia y deep sleep | Completado (lock/unlock, sleep/wake, fullscreen y politica determinista verificados en vivo; snapshot persistente no aplica: los presenters GPU preservan el frame) | power.rs (logind Session Lock/Unlock + PrepareForSleep, UPower, Hyprland socket2); xtask shadergen WGSL->MSL con hash y --check; Swift consume el MSL generado (verificacion Metal pendiente en Mac) | 2026-08-29 |
 | M5 - Empaquetado | Parcial (servicio systemd + install.sh listos) | linux/install.sh, linux/particlewall.service | 2026-08-25 |
 
 ## 19. Primer siguiente paso autorizado
