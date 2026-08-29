@@ -278,6 +278,7 @@ final class MetalParticleRenderer: NSObject, WallpaperRenderer, MTKViewDelegate 
         case .metalTorusOrbit: 6
         case .metalChromaticRings: 7
         case .metalSphereTorus: 8
+        case .metalJellyfishPoints: 9
         case .web: 0
         }
     }
@@ -293,6 +294,7 @@ final class MetalParticleRenderer: NSObject, WallpaperRenderer, MTKViewDelegate 
         case .metalChromaticRings:
             Self.chromaticRingPointCount * Self.chromaticRingTrailCount
         case .metalSphereTorus: 40 * 80
+        case .metalJellyfishPoints: 10_000
         case .web: 0
         }
     }

@@ -263,6 +263,25 @@ pub fn sphere_torus_pixel(id: u32, engine_time: f32, point_scale: &mut f32) -> [
     [300.0 + local[0] * perspective, 300.0 + local[1] * perspective]
 }
 
+/// Medusa de Puntos (400px canvas). The JS `y^8` term is a bitwise XOR on
+/// the int32 truncation of y, mirrored with an i32 cast.
+pub fn jellyfish_pixel(id: u32, engine_time: f32) -> [f32; 2] {
+    let t = engine_time;
+    let i = 9999.0 - id as f32;
+    let y = i / 345.0;
+    let base = if y < 11.0 {
+        6.0 + ((y as i32 ^ 8) as f32).sin() * 6.0
+    } else {
+        y / 5.0 + (y / 2.0).cos()
+    };
+    let k = base * (i - t / 4.0).cos();
+    let e = y / 7.0 - 13.0;
+    let d = (k * k + e * e).sqrt() + (e / 4.0 + t).sin() / 2.0;
+    let c = d / 2.0 + 1.0 - t / 2.0;
+    let q = y * k / d * (3.0 + (d * 2.0 + y / 2.0 - t * 4.0).sin());
+    [q + 60.0 * c.cos() + 200.0, q * c.sin() + d * 29.0 - 170.0]
+}
+
 /// Full shared-canvas transform, mirroring the WGSL block. Returns
 /// `[clip_x, clip_y, point_size_px, r, g, b, a]`.
 pub fn model_sample(id: u32, model: u32, u: &Uniforms, flow: &FlowState) -> [f32; 7] {
@@ -317,6 +336,11 @@ pub fn model_sample(id: u32, model: u32, u: &Uniforms, flow: &FlowState) -> [f32
             let t = u.time * 1.2;
             pixel = sphere_torus_pixel(id, t, &mut point_scale);
             canvas_size = 600.0;
+        }
+        9 => {
+            // 8*PI wrap keeps t, t/2, t/4 and 4t seamless (see the WGSL).
+            let t = (u.time * 1.57079633) % 25.13274123;
+            pixel = jellyfish_pixel(id, t);
         }
         _ => {
             let trail_count = 8u32;

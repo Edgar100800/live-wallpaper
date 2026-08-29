@@ -608,18 +608,21 @@ Esta tabla debe actualizarse al completar cada fase.
 | M0B - wgpu layer-shell | Completado | GPU renderer wgpu/Vulkan en vivo en Omarchy: connection Wayland dedicada + superficies zwlr-layer-shell (GTK 4.18 no puede compartir wl_surface con la WSI de NVIDIA por wp_fifo_v1); presenters persistentes (parked) en switches web-gpu | 2026-08-28 |
 | M1 - Primer modulo compartido | Completado | particle.wgsl (particle-v1) + modulo parametric-waves + crate particlewall-render (uniforms 128B, referencia CPU, presenter wgpu, tests de paridad CPU-GPU en verde); wallpaper GPU aplicado y verificado visualmente en vivo | 2026-08-28 |
 | M2 - Ocho fondos GPU | Completado (grafo compartido implementado; pendiente UI de controles de grafo) | particle.wgsl con 8 modelos + flowUpdate + grafo; fixtures y contratos FR-GPU-06..09 en verde; ciclo completo de 8 fondos verificado en vivo sin caídas (NVIDIA WSI: presenters permanentes reconfigurados in-place) | 2026-08-28 |
-| M3 - Daemon funcional | En curso adelantado (multi-output + CLI listos; faltan persistencia, importador y biblioteca) | linux/crates/particlewall-linux | 2026-08-25 |
+| M2+ - Noveno fondo compartido (Toro de Esferas) | Completado | modelo sphere-torus añadido a particle.wgsl + cpu.rs + fixtures + gpu.rs (MODEL_VERTEX_COUNTS 9) + manifiesto metal-sphere-torus + fallback web + glue Swift; verificado en vivo con captura | 2026-08-29 |
+| M2+ - Décimo fondo compartido (Medusa de Puntos) | Completado | modelo jellyfish-points (dweet de 10k puntos, XOR JS y^8 como i32^8, t = time·PI/2 con envoltura 8·PI); tolerancia de paridad dedicada por reducción de argumentos (cos hasta i=9999); fixture + MSL regenerados; verificado en vivo con captura | 2026-08-29 |
+| M3 - Daemon funcional | En curso adelantado (multi-output, persistencia, CLI ampliado, controles de tamaño/brillo con ventana GTK + tray + CLI, y lanzador de escritorio listos; falta importador y biblioteca de wallpapers de usuario) | library.rs persiste ~/.config/particlewall/config.json (wallpaper, colores, tamaño, brillo, perfiles); settings.rs (sliders GTK), tray.rs (Ajustes…/scroll/presets), control.rs (--set-color size/brightness), main.rs (--app/--settings), linux/assets (icono + .desktop) | 2026-08-29 |
 | M4 - Energia y deep sleep | Completado (lock/unlock, sleep/wake, fullscreen y politica determinista verificados en vivo; snapshot persistente no aplica: los presenters GPU preservan el frame) | power.rs (logind Session Lock/Unlock + PrepareForSleep, UPower, Hyprland socket2); xtask shadergen WGSL->MSL con hash y --check; Swift consume el MSL generado (verificacion Metal pendiente en Mac) | 2026-08-29 |
-| M5 - Empaquetado | Parcial (servicio systemd + install.sh listos) | linux/install.sh, linux/particlewall.service | 2026-08-25 |
+| M5 - Empaquetado | Parcial (servicio systemd, install.sh y entrada de escritorio con icono listos) | linux/install.sh, linux/particlewall.service, linux/assets/{icon.png,particlewall.desktop}; falta PKGBUILD y documentacion de operacion | 2026-08-29 |
 
 ## 19. Primer siguiente paso autorizado
 
-El siguiente paso es exclusivamente la Fase T0:
+El siguiente paso es (en orden):
 
-1. Ejecutar y registrar el baseline actual en el Mac fisico.
-2. Crear schemas y fixtures compartidos.
-3. Crear los tests contractuales Swift y Rust antes de implementar sus modelos.
-4. Extraer y probar los scripts JavaScript compartidos.
-5. Preparar el harness visual y los criterios numericos.
+1. Verificacion en el Mac fisico: `swift test -c release` + `build-app.sh` con el
+   MSL regenerado (`Sources/ParticleWall/Resources/generated/particle.metal`) y
+   los nueve fondos compartidos.
+2. M3, remanente: importador y biblioteca de wallpapers de usuario en Linux
+   (contrato FR-LIB-01..07 ya compartido).
+3. M5, remanente: documentacion de operacion y PKGBUILD si se aprueba.
 
-No debe iniciarse el renderer Linux ni refactorizarse Metal hasta cumplir G-01.
+No debe tocarse particle.wgsl sin regenerar MSL (`tools/xtask`) y fixtures.

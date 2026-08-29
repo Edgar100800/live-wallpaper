@@ -13,7 +13,7 @@ fn fixture_path(module: &str) -> std::path::PathBuf {
 }
 
 /// Selected ids per model, respecting each model's instance count.
-const SAMPLE_IDS: [&[u32]; 9] = [
+const SAMPLE_IDS: [&[u32]; 10] = [
     &[0, 1, 234, 4999, 9998, 9999],
     &[0, 1, 7, 15000, 29998, 29999],
     &[0, 1, 799, 12000, 29998, 29999],
@@ -23,6 +23,7 @@ const SAMPLE_IDS: [&[u32]; 9] = [
     &[0, 511, 512, 20000, 37374, 37375],
     &[0, 7, 8, 6000, 49798, 49799],
     &[0, 79, 80, 1600, 3198, 3199],
+    &[0, 1, 345, 5000, 8000, 9999],
 ];
 
 const SAMPLE_TIMES: [f32; 4] = [0.0, 1.7, 13.3, 41.25];
@@ -79,7 +80,7 @@ fn reference_cases(model: u32) -> serde_json::Value {
     })
 }
 
-pub const MODULE_IDS: [&str; 9] = [
+pub const MODULE_IDS: [&str; 10] = [
     "parametric-waves",
     "twin-vortex",
     "orbital-bloom",
@@ -89,11 +90,12 @@ pub const MODULE_IDS: [&str; 9] = [
     "torus-orbit",
     "chromatic-rings",
     "sphere-torus",
+    "jellyfish-points",
 ];
 
 #[test]
 fn cpu_reference_matches_committed_fixture() {
-    for model in 0..9u32 {
+    for model in 0..10u32 {
         let path = fixture_path(MODULE_IDS[model as usize]);
         if std::env::var("GENERATE_FIXTURES").is_ok() {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -314,7 +316,7 @@ fn upload_flow_buffers(ctx: &GpuCtx, flow: &cpu::FlowState) -> (wgpu::Buffer, wg
 #[test]
 fn gpu_wgsl_matches_cpu_reference() {
     let ctx = gpu_ctx();
-    for model in 0..9u32 {
+    for model in 0..10u32 {
         let flow = reference_flow(model);
         let (particles_buf, history_buf) = upload_flow_buffers(&ctx, &flow);
         let ids: Vec<u32> = SAMPLE_IDS[model as usize].to_vec();
@@ -402,10 +404,8 @@ fn gpu_wgsl_matches_cpu_reference() {
 
             for (i, &id) in ids.iter().enumerate() {
                 let expected = cpu::model_sample(id, model, &u, &flow);
-                // Model 5 evaluates sin/cos at arguments up to prime*1e0:
-                // argument-reduction rounding differs between the CPU libm
-                // and GPU transcendentals, so only the visible prime range
-                // (radius under canvas bounds) carries a numeric contract.
+                // Model 5 skips the invisible large-prime range entirely
+                // (rationale in the tolerance branch below).
                 if model == 5 && flow.particles[id as usize][0] > 40_000.0 {
                     continue;
                 }
@@ -414,7 +414,13 @@ fn gpu_wgsl_matches_cpu_reference() {
                 row.remove(3); // drop the padding slot
                 for (g, w) in row.iter().zip(expected.iter()) {
                     let diff = (g - w).abs();
-                    let tol = if model == 5 {
+                    // Model 5 evaluates sin/cos at arguments up to prime*1e0
+                    // and model 9 at up to cos(i - t/4) with i = 9999:
+                    // argument-reduction rounding differs between the CPU
+                    // libm and GPU transcendentals (same f32 input, different
+                    // reduction quality), so both carry a numeric contract at
+                    // a relaxed absolute tolerance.
+                    let tol = if model == 5 || model == 9 {
                         4e-3
                     } else {
                         w.abs().max(1.0) * 1e-4

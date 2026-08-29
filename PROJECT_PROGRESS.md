@@ -1,12 +1,71 @@
 # ParticleWall: estado y registro de progreso
 
-Actualizado: 2026-07-27
+Actualizado: 2026-08-29
 
 Este documento es la fuente de verdad del estado actual del proyecto. El
 [`README.md`](README.md) contiene la guía rápida de uso,
 [`PERFORMANCE_ROADMAP.md`](PERFORMANCE_ROADMAP.md) conserva la investigación y
-el trabajo técnico pendiente, y [`Animated Wallpaper for Mac.md`](Animated%20Wallpaper%20for%20Mac.md)
+el trabajo técnico pendiente, [`PRD_LINUX_PORT.md`](PRD_LINUX_PORT.md) es el PRD
+del port a Linux con su seguimiento por fases (sección 18), y
+[`Animated Wallpaper for Mac.md`](Animated%20Wallpaper%20for%20Mac.md)
 es el plan histórico con el que comenzó la aplicación.
+
+## Port a Linux (Omarchy/Hyprland) — estado actual
+
+Port en Rust de la aplicación macOS a Linux, compartiendo todos los fondos GPU
+como módulos WGSL multiplataforma (`shared/backgrounds/engines/particle-v1/`).
+Rama de trabajo: `feature/linux-port`.
+
+### Arquitectura del port
+
+- **Daemon Rust** (`linux/crates/particlewall-linux`): servicio systemd --user
+  con salida por monitor (GTK4 + gtk4-layer-shell), socket Unix de control,
+  tray de barra, CLI, monitor de energía y launcher de escritorio.
+- **Motor GPU compartido**: `particle.wgsl` con los nueve fondos + kernels de
+  flow/grafo; referencia CPU y tests de paridad en `particlewall-render`;
+  `tools/xtask` valida el WGSL y genera el MSL que consume macOS.
+- **Renderer web**: WebKitGTK con los fallbacks HTML incluidos y contrato de
+  aparición compartido con macOS.
+
+### Funcionalidades terminadas en el port
+
+- [x] M0A: daemon WebKitGTK bajo systemd --user, CLI base (--pause/--resume/--fps/--status).
+- [x] M0B: renderer wgpu/Vulkan en superficies zwlr-layer-shell (conexión Wayland
+      dedicada; presenters GPU permanentes que se reconfiguran in-place).
+- [x] M1: primer módulo compartido (Ondas Paramétricas) con paridad CPU-GPU.
+- [x] M2: ocho fondos GPU en WGSL + flowUpdate + grafo por proximidad; contratos
+      FR-GPU-06..09 en verde; ciclo completo verificado en vivo sin caídas.
+- [x] Noveno fondo compartido "Toro de Esferas" (`sphere-torus`) en ambas plataformas.
+- [x] Décimo fondo compartido "Medusa de Puntos" (`jellyfish-points`, dweet de
+      10k puntos con XOR JS `y^8` y envoltura de tiempo a 8·PI) en ambas plataformas.
+- [x] M3 (parcial): multi-output, persistencia en `~/.config/particlewall/config.json`
+      (wallpaper, colores, perfiles), controles de tamaño de partícula (0.25–8) e
+      intensidad/brillo (0.25–10) con ventana GTK de sliders, scroll en el tray,
+      presets y CLI `--set-color`; curva de brillo asintótica `1 - exp(-0.55·b)`
+      compartida WGSL/CPU (el brillo ya no se satura por encima de ~2.6).
+- [x] M4: energía — lock/unlock por logind, sleep/wake, pausa por fullscreen de
+      Hyprland y UPower; política determinista (`PlaybackFlags.system_paused`).
+- [x] M5 (parcial): servicio systemd, `install.sh` y entrada de escritorio con
+      ícono (modo `--app` abre ajustes o arranca el servicio).
+
+### Verificación en Linux
+
+- `cargo test` verde en los tres crates (los de render SIEMPRE con
+  `--test-threads=1`: cuatro contextos GPU paralelos cuelgan el driver NVIDIA).
+- Fixtures numéricos regenerados para los diez fondos; paridad CPU-GPU en verde
+  (Medusa con tolerancia dedicada: `cos(i - t/4)` evalúa hasta i=9999).
+- `tools/xtask -- shadergen --check` sin drift entre WGSL y MSL generado.
+- Verificaciones en vivo con capturas: los diez fondos, sliders de ajustes,
+  launcher (`gtk-launch particlewall`) y pausa/reanudación por energía.
+
+### Pendiente del port
+
+- [ ] Verificación en el Mac físico: `swift test` + `build-app.sh` con el MSL
+      regenerado y los nueve fondos compartidos.
+- [ ] M3, remanente: importador y biblioteca de wallpapers de usuario en Linux.
+- [ ] M5, remanente: documentación de operación y PKGBUILD (si se aprueba).
+- [ ] (Opcional) sincronizar en vivo las etiquetas de la ventana de ajustes tras
+      un `--set-color` externo.
 
 ## Estado general
 

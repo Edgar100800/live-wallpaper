@@ -1,7 +1,7 @@
 // particle-v1: shared particle engine (WGSL source of truth).
 //
 // Mirrors MetalParticleRenderer in Sources/ParticleWall/WallpaperRenderer.swift
-// (all eight models, the flow-state compute kernel and the graph overlay).
+// (all ten models, the flow-state compute kernel and the graph overlay).
 // Point sprites are expanded to instanced quads (WebGPU has no point_size):
 // 6 vertices per particle, vertex_index/6 = particle id.
 // Uniforms layout must stay 16-byte aligned and identical to the Swift
@@ -231,6 +231,24 @@ fn sampleSphereTorus(id: u32, t: f32, pointScale: ptr<function, f32>) -> vec2f {
                300.0 + local.y * perspective);
 }
 
+// Medusa de Puntos (model 9): dotted jellyfish drawn by a 10k-point spiral
+// (one radian between consecutive points). The JS `y^8` bitwise term is an
+// XOR on the int32 truncation of y.
+fn sampleJellyfish(id: u32, t: f32) -> vec2f {
+  let i = 9999.0 - f32(id);
+  let y = i / 345.0;
+  let base = select(y / 5.0 + cos(y / 2.0),
+                    6.0 + sin(f32(i32(y) ^ 8)) * 6.0,
+                    y < 11.0);
+  let k = base * cos(i - t / 4.0);
+  let e = y / 7.0 - 13.0;
+  let d = length(vec2f(k, e)) + sin(e / 4.0 + t) / 2.0;
+  let c = d / 2.0 + 1.0 - t / 2.0;
+  let q = y * k / d * (3.0 + sin(d * 2.0 + y / 2.0 - t * 4.0));
+  return vec2f(q + 60.0 * cos(c) + 200.0,
+               q * sin(c) + d * 29.0 - 170.0);
+}
+
 /// Samples a particle; `style` selects the model (model.x), exactly like the
 /// Swift particleSample switch. Returns canvas-space pixel + sprite factors.
 fn particleSample(id: u32, u: Uniforms) -> ParticleSample {
@@ -321,11 +339,18 @@ fn particleSample(id: u32, u: Uniforms) -> ParticleSample {
     renderColor = hsbColor * u.appearance.rgb;
     let sourceAlpha = clamp(0.7 / max(energy, 0.025), 0.018, 0.82);
     trailAlpha = sourceAlpha * exp(-f32(trailID) * 0.32);
-  } else {
+  } else if (style < 8.5) {
     // Toro de Esferas (model 8): t wraps every unit in the source dweet.
     let t = (u.time * 1.2) % 1.0;
     pixel = sampleSphereTorus(id, t, &pointScale);
     canvasSize = 600.0;
+  } else {
+    // Medusa de Puntos (model 9): PI/120 per p5 frame at a 60 FPS baseline
+    // (speed PI/2). Wrapping at 8*PI returns every phase term (t, t/2,
+    // t/4, 4t) to its start: seamless loop with bounded arguments for the
+    // high-frequency cos(i - t/4).
+    let t = (u.time * 1.57079633) % 25.13274123;
+    pixel = sampleJellyfish(id, t);
   }
 
   // Convert the source canvas into aspect-correct clip space.

@@ -49,6 +49,7 @@ fn gpu_model_for(wallpaper_id: &str) -> Option<u32> {
         "TorusOrbitWallpaper" => 6,
         "ChromaticRingsWallpaper" => 7,
         "SphereTorusWallpaper" => 8,
+        "JellyfishPointsWallpaper" => 9,
         _ => return None,
     })
 }
