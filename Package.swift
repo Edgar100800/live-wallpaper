@@ -20,7 +20,8 @@ let package = Package(
                 .copy("Resources/NoiseRainWallpaper"),
                 .copy("Resources/PrimeSpiralWallpaper"),
                 .copy("Resources/TorusOrbitWallpaper"),
-                .copy("Resources/ChromaticRingsWallpaper")
+                .copy("Resources/ChromaticRingsWallpaper"),
+                .copy("Resources/generated")
             ]
         ),
         .testTarget(

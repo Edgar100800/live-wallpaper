@@ -86,6 +86,8 @@ final class MetalParticleRenderer: NSObject, WallpaperRenderer, MTKViewDelegate 
     private let flowHistory: MTLBuffer
     private let graphPositions: MTLBuffer
     private let graphEdges: MTLBuffer
+    /// Naga's reserved [[buffer(6)]] (bound, never read).
+    private let bufferSizes: MTLBuffer
     private let startedAt = CACurrentMediaTime()
     private var frameCount: UInt64 = 0
     private var animationTime: Float = 0
@@ -130,6 +132,10 @@ final class MetalParticleRenderer: NSObject, WallpaperRenderer, MTKViewDelegate 
         var model: SIMD4<Float>
         var screenFit: SIMD4<Float>
         var graph: SIMD4<Float>
+        /// Engine addition: physical drawable size in pixels, used by the
+        /// shared WGSL to expand point sprites as instanced quads.
+        var viewport: SIMD2<Float>
+        var pad: SIMD2<Float>
     }
 
     static let descriptors: [WallpaperControlDescriptor] = [
@@ -297,447 +303,33 @@ final class MetalParticleRenderer: NSObject, WallpaperRenderer, MTKViewDelegate 
         metalView = MTKView(frame: frame, device: device)
         commandQueue = queue
 
-        let source = """
-        #include <metal_stdlib>
-        using namespace metal;
-
-        struct Uniforms {
-          float time;
-          float aspect;
-          float pointSize;
-          float scale;
-          float3 rotation;
-          float3 position;
-          float4 appearance;
-          float4 model;
-          float4 screenFit;
-          float4 graph;
-        };
-        struct VertexOut {
-          float4 position [[position]];
-          float pointSize [[point_size]];
-          float4 color;
-        };
-        struct ParticleSample {
-          float4 position;
-          float pointSize;
-          float4 color;
-        };
-        struct LineOut {
-          float4 position [[position]];
-          float4 color;
-        };
-
-        float flowHash(float3 p) {
-          p = fract(p * 0.1031);
-          p += dot(p, p.yzx + 33.33);
-          return fract((p.x + p.y) * p.z);
+        // Shared engine source of truth: shared/backgrounds/engines/
+        // particle-v1/particle.wgsl, compiled to MSL by tools/xtask.
+        guard let shaderURL = Bundle.module.url(
+            forResource: "particle",
+            withExtension: "metal",
+            subdirectory: "generated"
+        ), let source = try? String(contentsOf: shaderURL, encoding: .utf8) else {
+            NSLog("ParticleWall: generated particle.metal missing from bundle")
+            return nil
         }
-
-        float flowNoise(float3 p) {
-          float3 cell = floor(p);
-          float3 fraction = fract(p);
-          fraction = fraction * fraction * (3.0 - 2.0 * fraction);
-          float x00 = mix(flowHash(cell + float3(0, 0, 0)),
-                          flowHash(cell + float3(1, 0, 0)), fraction.x);
-          float x10 = mix(flowHash(cell + float3(0, 1, 0)),
-                          flowHash(cell + float3(1, 1, 0)), fraction.x);
-          float x01 = mix(flowHash(cell + float3(0, 0, 1)),
-                          flowHash(cell + float3(1, 0, 1)), fraction.x);
-          float x11 = mix(flowHash(cell + float3(0, 1, 1)),
-                          flowHash(cell + float3(1, 1, 1)), fraction.x);
-          return mix(mix(x00, x10, fraction.y),
-                     mix(x01, x11, fraction.y), fraction.z);
-        }
-
-        float3 hsvToRGB(float3 hsv) {
-          float4 constants = float4(1.0, 0.66666667, 0.33333333, 3.0);
-          float3 p = abs(fract(hsv.xxx + constants.xyz) * 6.0 - constants.www);
-          return hsv.z * mix(constants.xxx, clamp(p - constants.xxx, 0.0, 1.0),
-                             hsv.y);
-        }
-
-        kernel void flowUpdate(uint id [[thread_position_in_grid]],
-                               device float4 *particles [[buffer(0)]],
-                               device float4 *history [[buffer(1)]],
-                               constant uint4 &flow [[buffer(2)]]) {
-          const uint particleCount = 6480;
-          const uint historyCount = 12;
-          if (id >= particleCount) return;
-
-          uint frame = flow.x;
-          uint first = (frame * 9) % particleCount;
-          uint insertionOffset = (id + particleCount - first) % particleCount;
-          bool spawned = insertionOffset < 9;
-          float4 state = particles[id];
-
-          if (spawned) {
-            uint newTick = frame * 9 + insertionOffset + 1;
-            state = float4(fmod(float(newTick) * 99.0, 720.0), 0.0, 0.0, 3.0);
-            for (uint slot = 0; slot < historyCount; slot++) {
-              history[id * historyCount + slot] = float4(0.0);
-            }
-          } else if (state.w <= 0.0) {
-            return;
-          }
-
-          state.w *= 0.997;
-          float globalTick = float((frame + 1) * 9);
-          float n = flowNoise(float3(state.x / 720.0, state.y / 9.0,
-                                     globalTick / 720.0));
-          if (n > 0.4) {
-            state.z += 0.5;
-            state.y += state.z;
-          } else {
-            state.x += fmod(n, 0.1) > 0.05 ? 1.0 : -1.0;
-            state.z = 0.0;
-            state.y += 0.5;
-          }
-
-          particles[id] = state;
-          uint historySlot = frame % historyCount;
-          history[id * historyCount + historySlot] =
-              float4(state.xy, state.w, 1.0);
-        }
-
-        ParticleSample particleSample(uint id,
-                                      constant Uniforms &u,
-                                      device const float4 *flowParticles,
-                                      device const float4 *flowHistory) {
-          float style = u.model.x;
-          float2 pixel;
-          float canvasSize = 400.0;
-          float pointScale = 1.0;
-          float trailAlpha = 1.0;
-          float3 renderColor = u.appearance.rgb;
-
-          if (style < 0.5) {
-            // Ondas Paramétricas: PI/80 per p5 frame at a 30 FPS baseline.
-            float t = u.time * 1.17809725;
-            float i = 9999.0 - float(id);
-            float y = i / 235.0;
-            float k = (4.0 + cos(i / 9.0 - t * 2.0)) * cos(i / 35.0);
-            float e = y / 7.0 - 13.0;
-            float d = length(float2(k, e)) + sin(e / 9.0 + t / 2.0) - 4.0;
-            float q = 2.0 * sin(k * 3.0)
-                    - y / 35.0 * k * (9.0 + k * sin(cos(e) * 9.0 - d * 2.0 + t));
-            float c = d - t;
-            pixel = float2(q + 40.0 * cos(c) + 200.0,
-                           q * sin(c) + d * 35.0);
-          } else if (style < 1.5) {
-            // Vórtice Gemelo: direct translation of the supplied 30k-point dweet.
-            float t = u.time * 2.09439510;
-            float i = 29999.0 - float(id);
-            float m = fmod(i, 2.0) * 3.0;
-            float k = 14.0 * cos(i / 39.0);
-            float e = i / 1200.0 - 13.0;
-            float d = dot(float2(k, e), float2(k, e)) / 59.0 + 1.0;
-            float q = 89.0 - sin(k) * d
-                    + k * (8.0 / d + sin(d * 3.0 + e / 9.0 - t));
-            float c = d * 0.45 - sin(t - d) / 8.0 - t / 8.0 + m;
-            pixel = float2(q * sin(c) + 200.0,
-                           (q + 40.0 + 30.0 * sin(c * 2.0 + m)) * cos(c) + 200.0);
-          } else if (style < 2.5) {
-            // Flor Orbital: the bitwise JS term becomes 80 or 160 by parity.
-            float t = u.time * 1.57079633;
-            float i = 29999.0 - float(id);
-            float y = i / 799.0;
-            float k = 5.0 * cos(i / 48.0);
-            float e = 5.0 * cos(y / 9.0);
-            float divisor = 6.0 + fmod(i, 4.0);
-            float d = pow(length(float2(k, e)) / divisor, 4.0) + 4.0;
-            float parityOffset = 80.0 * (1.0 + fmod(i, 2.0));
-            float q = k * (3.0 + e / 2.0 * sin(d * 8.0 + k / 9.0 - t))
-                    - 3.0 * sin(k * d / 3.0) + parityOffset;
-            float c = d - t / 9.0 + fmod(i, 5.0);
-            pixel = float2(q * sin(c) + 200.0,
-                           q * cos(c - fmod(i, 2.0) + fmod(i, 5.0) * 3.0 + 7.0)
-                           + 200.0);
-          } else if (style < 3.5) {
-            // Roseta Hexagonal: generate the six feedback rotations directly
-            // instead of copying the previous framebuffer six times.
-            uint sample = id / 6;
-            uint copy = id % 6;
-            float t = u.time * 0.39269908;
-            float i = 19999.0 - float(sample);
-            float k = fmod(i, 25.0) - 12.0;
-            float e = i / 800.0;
-            float d = 7.0 * cos(length(float2(k, e)) / 3.0 + t / 2.0);
-            float2 centered = float2(k * 4.0 + d * k * sin(d + e / 9.0 + t),
-                                     e * 2.0 - d * 9.0 - d * 9.0 * cos(d + t));
-            float angle = float(copy) * 1.04719755;
-            float ca = cos(angle), sa = sin(angle);
-            centered = float2(centered.x * ca - centered.y * sa,
-                              centered.x * sa + centered.y * ca);
-            pixel = centered + 200.0;
-          } else if (style < 4.5) {
-            // Lluvia de Ruido: positions come from the persistent compute
-            // buffer. Twelve history slots approximate p5's BLUR feedback
-            // without copying and filtering the entire framebuffer.
-            const uint historyCount = 12;
-            uint particleID = id / historyCount;
-            uint trailID = id % historyCount;
-            uint latestSlot = uint(u.model.y + 0.5);
-            uint slot = (latestSlot + historyCount - trailID) % historyCount;
-            float4 sample = flowHistory[particleID * historyCount + slot];
-            pixel = sample.xy;
-            canvasSize = 720.0;
-            pointScale = max(0.16, sample.z / 3.0);
-            trailAlpha = sample.w * exp(-float(trailID) * 0.2);
-          } else if (style < 5.5) {
-            // Espiral Prima: upload only the 78,498 primes represented by the
-            // million-entry Processing sieve, not the composite placeholders.
-            float prime = flowParticles[id].x;
-            float t = 1.0 + u.time * 0.000003;
-            pixel = float2(prime * sin(prime * t) / 99.0 + 400.0,
-                           prime * cos(prime * t) / 99.0 + 400.0);
-            canvasSize = 800.0;
-            pointScale = 0.38;
-          } else if (style < 6.5) {
-            // Órbita Toroidal: 64 toruses represented by a balanced 36,864
-            // point cloud, plus a 512-point light sphere.
-            float f = u.time * 0.3;
-            float3 world;
-            if (id < 512) {
-              float sample = float(id) + 0.5;
-              float sphereY = 1.0 - 2.0 * sample / 512.0;
-              float sphereRadius = sqrt(max(0.0, 1.0 - sphereY * sphereY));
-              float sphereAngle = sample * 2.39996323;
-              float3 unitSphere = float3(cos(sphereAngle) * sphereRadius,
-                                         sphereY,
-                                         sin(sphereAngle) * sphereRadius);
-              world = float3(60.0 * sin(f) + 99.0 * sin(-f),
-                             -20.0,
-                             170.0 + 99.0 * cos(f)) + unitSphere * 4.0;
-              pointScale = 0.75;
-            } else {
-              uint localID = id - 512;
-              uint torusID = localID / (96 * 6);
-              uint torusPoint = localID % (96 * 6);
-              uint majorID = torusPoint / 6;
-              uint tubeID = torusPoint % 6;
-              float major = float(majorID) * 6.28318531 / 96.0;
-              float tube = float(tubeID) * 6.28318531 / 6.0;
-              float radius = 80.0 + 4.0 * cos(tube);
-              float3 local = float3(radius * cos(major),
-                                    radius * sin(major),
-                                    4.0 * sin(tube));
-
-              float cx = cos(0.8), sx = sin(0.8);
-              local = float3(local.x,
-                             local.y * cx - local.z * sx,
-                             local.y * sx + local.z * cx);
-              local.x += 120.0;
-
-              float ringAngle = float(torusID) * 3.14159265 / 32.0 + f;
-              float cy = cos(ringAngle), sy = sin(ringAngle);
-              world = float3(local.x * cy + local.z * sy,
-                             local.y,
-                             -local.x * sy + local.z * cy);
-              world += float3(60.0 * sin(f), -20.0, 170.0);
-              pointScale = 0.42;
-            }
-
-            float eyeZ = 346.41016;
-            float perspective = eyeZ / max(72.0, eyeZ - world.z);
-            pixel = float2(200.0 + world.x * perspective,
-                           200.0 + world.y * perspective);
-          } else {
-            // Anillos Cromáticos: the source's eleven HSB rings contain 6,225
-            // points. Eight nearby time samples reproduce the soft BLUR trail
-            // without filtering or retaining a full 720x720 framebuffer.
-            const uint trailCount = 8;
-            uint baseID = id / trailCount;
-            uint trailID = id % trailCount;
-            uint localID = baseID;
-            float d = 330.0;
-            uint ringPointCount = 0;
-            for (uint ring = 0; ring < 11; ring++) {
-              ringPointCount = uint(ceil(3.14159265 * d));
-              if (localID < ringPointCount) break;
-              localID -= ringPointCount;
-              d -= 30.0;
-            }
-
-            float t = max(0.0, u.time * 30.0 - float(trailID) * 0.85);
-            float r = float(localID) * 2.0 / d;
-            float tangent = tan(d / 199.0 - t / 99.0);
-            float energy = min(tangent * tangent, 64.0);
-            float noiseValue = flowNoise(float3(r * 99.0, d, 0.0));
-            float radius = d
-                + sin(r * 9.0 + t / 9.0 * d / 720.0)
-                * d * 0.25 * noiseValue * energy;
-            float angle = r - 1.57079633;
-            pixel = float2(cos(angle) * radius + 360.0,
-                           sin(angle) * radius + 360.0);
-            canvasSize = 720.0;
-            pointScale = 0.9;
-
-            // p5's default HSB range is 0...255. The tint control multiplies
-            // the generated hue, so white keeps the original palette.
-            float hue = clamp(d, 0.0, 255.0) / 255.0;
-            float3 hsbColor = hsvToRGB(float3(hue, 50.0 / 255.0, 1.0));
-            renderColor = hsbColor * u.appearance.rgb;
-            float sourceAlpha = clamp(0.7 / max(energy, 0.025), 0.018, 0.82);
-            trailAlpha = sourceAlpha * exp(-float(trailID) * 0.32);
-          }
-
-          // Convert the source canvas into aspect-correct clip space.
-          float center = canvasSize * 0.5;
-          float2 p = float2((pixel.x - center) / center,
-                            (center - pixel.y) / center);
-          float cz = cos(u.rotation.z), sz = sin(u.rotation.z);
-          p = float2(p.x * cz - p.y * sz, p.x * sz + p.y * cz);
-          p *= u.scale * exp(u.position.z * 0.08);
-          // X/Y rotations become a subtle 2D perspective compression.
-          p *= float2(cos(u.rotation.y), cos(u.rotation.x));
-          p += u.position.xy * 0.25;
-          p *= max(float2(0.05), u.screenFit.yz);
-          if (u.screenFit.x < 0.5) {
-            p.x /= max(0.1, u.aspect);
-          }
-
-          ParticleSample out;
-          out.position = float4(p, 0.0, 1.0);
-          out.pointSize = max(1.0, u.pointSize * pointScale);
-          float brightness = max(0.05, u.appearance.w);
-          out.color = float4(renderColor * brightness,
-                             clamp(0.38 * brightness, 0.08, 1.0) * trailAlpha);
-          return out;
-        }
-
-        vertex VertexOut particleVertex(uint id [[vertex_id]],
-                                        constant Uniforms &u [[buffer(0)]],
-                                        device const float4 *flowParticles [[buffer(1)]],
-                                        device const float4 *flowHistory [[buffer(2)]]) {
-          ParticleSample sample = particleSample(id, u, flowParticles, flowHistory);
-          VertexOut out;
-          out.position = sample.position;
-          out.pointSize = sample.pointSize;
-          out.color = sample.color;
-          return out;
-        }
-
-        kernel void graphPositionUpdate(
-            uint id [[thread_position_in_grid]],
-            constant Uniforms &u [[buffer(0)]],
-            device const float4 *flowParticles [[buffer(1)]],
-            device const float4 *flowHistory [[buffer(2)]],
-            device float4 *positions [[buffer(3)]]) {
-          const uint nodeCount = 768;
-          if (id >= nodeCount) return;
-          uint sourceCount = max(1u, uint(u.model.w + 0.5));
-          uint sourceID = min(sourceCount - 1,
-                              uint(float(id) * float(sourceCount) / float(nodeCount)));
-          ParticleSample sample = particleSample(sourceID, u, flowParticles, flowHistory);
-          bool visible = all(abs(sample.position.xy) <= float2(1.15))
-              && sample.color.a > 0.005;
-          positions[id] = float4(sample.position.xy,
-                                 visible ? sample.color.a : 0.0,
-                                 float(sourceID));
-        }
-
-        kernel void graphConnectionUpdate(
-            uint id [[thread_position_in_grid]],
-            device const float4 *positions [[buffer(0)]],
-            device float4 *edges [[buffer(1)]],
-            constant float4 &graph [[buffer(2)]]) {
-          const uint nodeCount = 768;
-          const uint maxConnections = 3;
-          if (id >= nodeCount) return;
-
-          float4 source = positions[id];
-          float threshold = max(0.001, graph.y);
-          float thresholdSquared = threshold * threshold;
-          float bestDistance0 = thresholdSquared;
-          float bestDistance1 = thresholdSquared;
-          float bestDistance2 = thresholdSquared;
-          uint bestID0 = 0xffffffffu;
-          uint bestID1 = 0xffffffffu;
-          uint bestID2 = 0xffffffffu;
-
-          if (source.z > 0.0) {
-            for (uint candidate = id + 1; candidate < nodeCount; candidate++) {
-              float4 target = positions[candidate];
-              if (target.z <= 0.0) continue;
-              float2 delta = source.xy - target.xy;
-              float distanceSquared = dot(delta, delta);
-              if (distanceSquared >= bestDistance2) continue;
-              if (distanceSquared < bestDistance0) {
-                bestDistance2 = bestDistance1;
-                bestID2 = bestID1;
-                bestDistance1 = bestDistance0;
-                bestID1 = bestID0;
-                bestDistance0 = distanceSquared;
-                bestID0 = candidate;
-              } else if (distanceSquared < bestDistance1) {
-                bestDistance2 = bestDistance1;
-                bestID2 = bestID1;
-                bestDistance1 = distanceSquared;
-                bestID1 = candidate;
-              } else {
-                bestDistance2 = distanceSquared;
-                bestID2 = candidate;
-              }
-            }
-          }
-
-          uint requestedConnections = min(maxConnections, uint(graph.w + 0.5));
-          for (uint slot = 0; slot < maxConnections; slot++) {
-            uint targetID = slot == 0 ? bestID0 : (slot == 1 ? bestID1 : bestID2);
-            float distanceSquared = slot == 0
-                ? bestDistance0
-                : (slot == 1 ? bestDistance1 : bestDistance2);
-            uint edge = (id * maxConnections + slot) * 2;
-            if (slot < requestedConnections && targetID != 0xffffffffu) {
-              float4 target = positions[targetID];
-              float proximity = 1.0 - sqrt(distanceSquared) / threshold;
-              float alpha = clamp(graph.z * proximity * min(source.z, target.z),
-                                  0.0, 1.0);
-              edges[edge] = float4(source.xy, alpha, 0.0);
-              edges[edge + 1] = float4(target.xy, alpha, 0.0);
-            } else {
-              edges[edge] = float4(2.0, 2.0, 0.0, 0.0);
-              edges[edge + 1] = float4(2.0, 2.0, 0.0, 0.0);
-            }
-          }
-        }
-
-        vertex LineOut graphVertex(uint id [[vertex_id]],
-                                   device const float4 *edges [[buffer(0)]],
-                                   constant Uniforms &u [[buffer(1)]]) {
-          float4 edge = edges[id];
-          LineOut out;
-          out.position = float4(edge.xy, 0.0, 1.0);
-          out.color = float4(u.appearance.rgb * max(0.05, u.appearance.w), edge.z);
-          return out;
-        }
-
-        fragment float4 graphFragment(LineOut in [[stage_in]]) {
-          return in.color;
-        }
-
-        fragment float4 particleFragment(VertexOut in [[stage_in]],
-                                         float2 pointCoord [[point_coord]]) {
-          float2 centered = pointCoord * 2.0 - 1.0;
-          float alpha = smoothstep(1.0, 0.15, length(centered)) * in.color.a;
-          return float4(in.color.rgb, alpha);
-        }
-        """
 
         do {
             let library = try device.makeLibrary(source: source, options: nil)
-            guard let vertex = library.makeFunction(name: "particleVertex"),
-                  let fragment = library.makeFunction(name: "particleFragment"),
+            // Entry point names come from the shared WGSL (tools/xtask).
+            guard let vertex = library.makeFunction(name: "vsMain"),
+                  let fragment = library.makeFunction(name: "fsMain"),
                   let flowUpdate = library.makeFunction(name: "flowUpdate"),
-                  let graphVertex = library.makeFunction(name: "graphVertex"),
-                  let graphFragment = library.makeFunction(name: "graphFragment"),
+                  let graphVertex = library.makeFunction(name: "vsLine"),
+                  let graphFragment = library.makeFunction(name: "fsLine"),
                   let graphPositionUpdate = library.makeFunction(name: "graphPositionUpdate"),
                   let graphConnectionUpdate = library.makeFunction(name: "graphConnectionUpdate")
             else { return nil }
             let descriptor = MTLRenderPipelineDescriptor()
             descriptor.vertexFunction = vertex
             descriptor.fragmentFunction = fragment
+            // The shared engine expands every particle to a 6-vertex quad.
+            descriptor.inputPrimitiveTopology = .triangle
             descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
             descriptor.colorAttachments[0].isBlendingEnabled = true
             descriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
@@ -784,7 +376,12 @@ final class MetalParticleRenderer: NSObject, WallpaperRenderer, MTKViewDelegate 
                   let positions = device.makeBuffer(length: graphPositionLength,
                                                     options: .storageModePrivate),
                   let edges = device.makeBuffer(length: graphEdgeLength,
-                                                options: .storageModePrivate)
+                                                options: .storageModePrivate),
+                  // Naga reserves [[buffer(6)]] for bounds-check sizes; the
+                  // generated code never reads them (unchecked policies), but
+                  // the argument must stay bound.
+                  let bufferSizes = device.makeBuffer(length: 32,
+                                                      options: .storageModeShared)
             else { return nil }
             particles.contents().initializeMemory(as: UInt8.self,
                                                   repeating: 0,
@@ -805,6 +402,7 @@ final class MetalParticleRenderer: NSObject, WallpaperRenderer, MTKViewDelegate 
             flowHistory = history
             graphPositions = positions
             graphEdges = edges
+            bufferSizes = bufferSizes
         } catch {
             NSLog("ParticleWall: Metal pipeline failed: \(error)")
             return nil
@@ -968,7 +566,9 @@ final class MetalParticleRenderer: NSObject, WallpaperRenderer, MTKViewDelegate 
                          Float(vertexCount)),
             screenFit: SIMD4(fitToScreen ? 1 : 0, horizontalLimit, verticalLimit, 0),
             graph: SIMD4(graphEnabled ? 1 : 0, graphDistance, graphOpacity,
-                         graphConnections)
+                         graphConnections),
+            viewport: SIMD2(Float(drawableSize.width), Float(drawableSize.height)),
+            pad: SIMD2(repeating: 0)
         )
         if graphEnabled {
             encodeGraphUpdates(in: buffer, uniforms: &uniforms)
@@ -978,10 +578,11 @@ final class MetalParticleRenderer: NSObject, WallpaperRenderer, MTKViewDelegate 
                 return
             }
             graphEncoder.setRenderPipelineState(graphPipeline)
-            graphEncoder.setVertexBuffer(graphEdges, offset: 0, index: 0)
             graphEncoder.setVertexBytes(&uniforms,
                                         length: MemoryLayout<Uniforms>.stride,
-                                        index: 1)
+                                        index: 0)
+            graphEncoder.setVertexBuffer(graphEdges, offset: 0, index: 3)
+            graphEncoder.setVertexBuffer(bufferSizes, offset: 0, index: 6)
             graphEncoder.drawPrimitives(
                 type: .line,
                 vertexStart: 0,
@@ -996,7 +597,9 @@ final class MetalParticleRenderer: NSObject, WallpaperRenderer, MTKViewDelegate 
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
         encoder.setVertexBuffer(flowParticles, offset: 0, index: 1)
         encoder.setVertexBuffer(flowHistory, offset: 0, index: 2)
-        encoder.drawPrimitives(type: .point, vertexStart: 0, vertexCount: vertexCount)
+        encoder.setVertexBuffer(bufferSizes, offset: 0, index: 6)
+        // The shared engine expands each particle to a 6-vertex quad.
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: vertexCount * 6)
         encoder.endEncoding()
 
         let snapshotRequests = pendingSnapshots
@@ -1089,7 +692,8 @@ final class MetalParticleRenderer: NSObject, WallpaperRenderer, MTKViewDelegate 
         positionEncoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
         positionEncoder.setBuffer(flowParticles, offset: 0, index: 1)
         positionEncoder.setBuffer(flowHistory, offset: 0, index: 2)
-        positionEncoder.setBuffer(graphPositions, offset: 0, index: 3)
+        positionEncoder.setBuffer(graphPositions, offset: 0, index: 5)
+        positionEncoder.setBuffer(bufferSizes, offset: 0, index: 6)
         positionEncoder.dispatchThreads(
             MTLSize(width: Self.graphNodeCount, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: positionWidth, height: 1, depth: 1)
@@ -1099,11 +703,13 @@ final class MetalParticleRenderer: NSObject, WallpaperRenderer, MTKViewDelegate 
         let connectionWidth = min(graphConnectionPipeline.threadExecutionWidth,
                                   graphConnectionPipeline.maxTotalThreadsPerThreadgroup)
         guard let connectionEncoder = commandBuffer.makeComputeCommandEncoder() else { return }
-        var graph = uniforms.graph
+        // The connection kernel reads graph parameters from the full
+        // uniforms block (gu, [[buffer(0)]]).
         connectionEncoder.setComputePipelineState(graphConnectionPipeline)
-        connectionEncoder.setBuffer(graphPositions, offset: 0, index: 0)
-        connectionEncoder.setBuffer(graphEdges, offset: 0, index: 1)
-        connectionEncoder.setBytes(&graph, length: MemoryLayout<SIMD4<Float>>.stride, index: 2)
+        connectionEncoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
+        connectionEncoder.setBuffer(graphPositions, offset: 0, index: 5)
+        connectionEncoder.setBuffer(graphEdges, offset: 0, index: 3)
+        connectionEncoder.setBuffer(bufferSizes, offset: 0, index: 6)
         connectionEncoder.dispatchThreads(
             MTLSize(width: Self.graphNodeCount, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: connectionWidth, height: 1, depth: 1)
@@ -1132,9 +738,10 @@ final class MetalParticleRenderer: NSObject, WallpaperRenderer, MTKViewDelegate 
                 UInt32(Self.flowHistoryCount)
             )
             encoder.setComputePipelineState(flowPipeline)
-            encoder.setBuffer(flowParticles, offset: 0, index: 0)
-            encoder.setBuffer(flowHistory, offset: 0, index: 1)
-            encoder.setBytes(&flow, length: MemoryLayout<SIMD4<UInt32>>.stride, index: 2)
+            encoder.setBuffer(flowParticles, offset: 0, index: 1)
+            encoder.setBuffer(flowHistory, offset: 0, index: 2)
+            encoder.setBytes(&flow, length: MemoryLayout<SIMD4<UInt32>>.stride, index: 4)
+            encoder.setBuffer(bufferSizes, offset: 0, index: 6)
             encoder.dispatchThreads(grid, threadsPerThreadgroup: threads)
             encoder.endEncoding()
             flowFrame &+= 1

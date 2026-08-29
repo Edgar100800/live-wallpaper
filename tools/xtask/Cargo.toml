@@ -1,0 +1,17 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2021"
+description = "ParticleWall xtask: WGSL validation and reproducible MSL generation (PRD 9.4)"
+publish = false
+
+# Naga is pinned EXACTLY: the generated particle.metal is a versioned artifact
+# and must never change because the toolchain moved (PRD 9.4.3).
+[dependencies]
+naga = { version = "=25.0.1", features = ["wgsl-in", "msl-out"] }
+sha2 = "0.10"
+serde_json = "1"
+
+[profile.release]
+# Small tool; keep compile fast.
+opt-level = 2
