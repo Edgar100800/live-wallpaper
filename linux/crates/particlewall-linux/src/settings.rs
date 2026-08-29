@@ -36,12 +36,14 @@ pub fn open(size: f64, brightness: f64, tx: CmdTx) {
     let size_value = Label::new(Some(&format!("{size:.2}")));
     size_value.set_width_chars(5);
     size_value.set_halign(Align::End);
-    let size_scale = Scale::with_range(Orientation::Horizontal, 0.5, 4.0, 0.05);
+    let size_scale = Scale::with_range(Orientation::Horizontal, 0.25, 8.0, 0.05);
     size_scale.set_value(size);
     size_scale.set_hexpand(true);
     size_scale.add_mark(1.0, gtk4::PositionType::Bottom, Some("1"));
     size_scale.add_mark(1.6, gtk4::PositionType::Bottom, Some("1.6"));
     size_scale.add_mark(2.5, gtk4::PositionType::Bottom, Some("2.5"));
+    size_scale.add_mark(4.0, gtk4::PositionType::Bottom, Some("4"));
+    size_scale.add_mark(6.0, gtk4::PositionType::Bottom, Some("6"));
     size_row.append(&size_label);
     size_row.append(&size_scale);
     size_row.append(&size_value);
@@ -77,6 +79,7 @@ pub fn open(size: f64, brightness: f64, tx: CmdTx) {
     bright_scale.add_mark(1.5, gtk4::PositionType::Bottom, Some("1.5"));
     bright_scale.add_mark(3.0, gtk4::PositionType::Bottom, Some("3"));
     bright_scale.add_mark(6.0, gtk4::PositionType::Bottom, Some("6"));
+    bright_scale.add_mark(10.0, gtk4::PositionType::Bottom, Some("10"));
     bright_row.append(&bright_label);
     bright_row.append(&bright_scale);
     bright_row.append(&bright_value);

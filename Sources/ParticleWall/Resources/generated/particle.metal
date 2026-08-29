@@ -420,7 +420,7 @@ ParticleSample particleSample(
     float brightness = metal::max(0.05, u.appearance.w);
     metal::float3 _e312 = renderColor;
     float _e319 = trailAlpha;
-    out_2.color = metal::float4(_e312 * brightness, metal::clamp(0.38 * brightness, 0.08, 1.0) * _e319);
+    out_2.color = metal::float4(_e312 * brightness, (1.0 - metal::exp(-0.55 * brightness)) * _e319);
     ParticleSample _e322 = out_2;
     return _e322;
 }

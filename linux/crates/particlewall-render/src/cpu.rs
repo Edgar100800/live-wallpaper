@@ -358,7 +358,9 @@ pub fn model_sample(id: u32, model: u32, u: &Uniforms, flow: &FlowState) -> [f32
     let clip = canvas_to_clip(pixel, canvas_size, u);
     let point_size = (u.point_size * point_scale).max(1.0);
     let brightness = u.appearance[3].max(0.05);
-    let alpha = (0.38 * brightness).clamp(0.08, 1.0) * trail_alpha;
+    // Asymptotic alpha mirrors the WGSL: never saturates, so the whole
+    // brightness range stays visible (0.38*b clamped died at ~2.6).
+    let alpha = (1.0 - (-0.55 * brightness).exp()) * trail_alpha;
     [
         clip[0],
         clip[1],

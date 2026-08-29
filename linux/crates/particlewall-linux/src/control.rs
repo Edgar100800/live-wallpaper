@@ -125,9 +125,10 @@ pub struct DaemonState {
     pub open_settings: Option<std::rc::Rc<dyn Fn(f64, f64)>>,
 }
 
-/// Wire ranges mirroring the macOS control descriptors: "Tamaño" 0.5-4 and
-/// "Intensidad de puntos" 0.25-10.
-pub const PARTICLE_SIZE_RANGE: (f64, f64) = (0.5, 4.0);
+/// Wire ranges: "Tamaño" extends the macOS descriptor (0.5-4) to 0.25-8 —
+/// point size has no physical ceiling and more headroom is useful; brightness
+/// keeps the macOS 0.25-10 (the shader now ramps visibly across all of it).
+pub const PARTICLE_SIZE_RANGE: (f64, f64) = (0.25, 8.0);
 pub const BRIGHTNESS_RANGE: (f64, f64) = (0.25, 10.0);
 
 fn appearance_js_parts(colors: &library::ColorSettings) -> Vec<String> {

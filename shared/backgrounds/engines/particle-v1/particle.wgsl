@@ -348,8 +348,12 @@ fn particleSample(id: u32, u: Uniforms) -> ParticleSample {
   out.clip = p;
   out.pointSizePx = max(1.0, u.pointSize * pointScale);
   let brightness = max(0.05, u.appearance.w);
+  // Asymptotic alpha: linear 0.38*b saturates at ~2.6 (nothing changes
+  // beyond that); the exponential keeps a visible ramp across the whole
+  // control range (b=6 -> 0.96, b=10 -> 0.996) with the same look at the
+  // 1.5 default.
   out.color = vec4f(renderColor * brightness,
-                    clamp(0.38 * brightness, 0.08, 1.0) * trailAlpha);
+                    (1.0 - exp(-0.55 * brightness)) * trailAlpha);
   return out;
 }
 

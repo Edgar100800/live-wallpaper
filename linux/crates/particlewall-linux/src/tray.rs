@@ -115,7 +115,7 @@ impl Tray for ParticleWallTray {
         wallpapers.push(MenuItem::Separator);
 
         // Size + brightness presets (sliders live in the settings window).
-        let size_items: Vec<MenuItem<Self>> = [0.5f64, 1.0, 1.6, 2.5, 4.0]
+        let size_items: Vec<MenuItem<Self>> = [0.25f64, 0.5, 1.0, 1.6, 2.5, 4.0, 6.0, 8.0]
             .into_iter()
             .map(|value| {
                 let check = if (value - size).abs() < 0.026 { "  [x] " } else { "  [ ] " };
@@ -137,7 +137,7 @@ impl Tray for ParticleWallTray {
             ..Default::default()
         }));
 
-        let bright_items: Vec<MenuItem<Self>> = [0.25f64, 0.5, 1.5, 3.0, 6.0, 10.0]
+        let bright_items: Vec<MenuItem<Self>> = [0.25f64, 0.5, 1.0, 1.5, 3.0, 6.0, 10.0]
             .into_iter()
             .map(|value| {
                 let check = if (value - brightness).abs() < 0.026 { "  [x] " } else { "  [ ] " };
