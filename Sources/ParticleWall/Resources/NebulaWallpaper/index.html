@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<script>
+  // Canvas fallback and thumbnail source for the native nebula model:
+  // nine soft clouds swept by two value-noise fields (the engine's
+  // flowNoise stands in for p5's Perlin noise). Points are white with a
+  // (1-i)*400/22/255 alpha ramp, accumulated per pixel like p5 does.
+  const canvas = document.getElementById('canvas');
+  const context = canvas.getContext('2d', { alpha: false });
+  const layerCanvas = document.createElement('canvas');
+  layerCanvas.width = 400;
+  layerCanvas.height = 400;
+  const layerContext = layerCanvas.getContext('2d');
+  const image = layerContext.createImageData(400, 400);
+  const coverage = new Float32Array(400 * 400);
+  let f = 0;
+
+  // Same hash/noise pair as flowHash/flowNoise in the shared engine.
+  const fract = v => v - Math.floor(v);
+  function hash(x, y, z) {
+    const vx = fract(x * 0.1031);
+    const vy = fract(y * 0.1031);
+    const vz = fract(z * 0.1031);
+    const d = vx * (vy + 33.33) + vy * (vz + 33.33) + vz * (vx + 33.33);
+    return fract((vx + d + (vy + d)) * (vz + d));
+  }
+  function noise(px, py, pz) {
+    const cx = Math.floor(px), cy = Math.floor(py), cz = Math.floor(pz);
+    let fx = px - cx, fy = py - cy, fz = pz - cz;
+    fx = fx * fx * (3 - 2 * fx);
+    fy = fy * fy * (3 - 2 * fy);
+    fz = fz * fz * (3 - 2 * fz);
+    const mix = (a, b, t) => a + (b - a) * t;
+    const x00 = mix(hash(cx, cy, cz), hash(cx + 1, cy, cz), fx);
+    const x10 = mix(hash(cx, cy + 1, cz), hash(cx + 1, cy + 1, cz), fx);
+    const x01 = mix(hash(cx, cy, cz + 1), hash(cx + 1, cy, cz + 1), fx);
+    const x11 = mix(hash(cx, cy + 1, cz + 1), hash(cx + 1, cy + 1, cz + 1), fx);
+    return mix(mix(x00, x10, fy), mix(x01, x11, fy), fz);
+  }
+
+  function resize() {
+    const ratio = Math.min(window.devicePixelRatio || 1, 1.5);
+    canvas.width = Math.max(1, Math.round(innerWidth * ratio));
+    canvas.height = Math.max(1, Math.round(innerHeight * ratio));
+  }
+
+  function draw() {
+    requestAnimationFrame(draw);
+    if (window.__pwPaused) return;
+    f += 0.005;
+    coverage.fill(0);
+    for (let layer = 0; layer < 9; layer++) {
+      const n = 8 - layer;
+      // Jittered 3x3 targets keep the visible entities spread across the
+      // canvas. Distinct base depths breathe gently instead of orbiting.
+      const eyeZ = 519.61524;
+      const column = layer % 3;
+      const row = Math.floor(layer / 3);
+      const tx = 60 + column * 140 + (hash(n, 1.9, 6.3) - 0.5) * 36;
+      const ty = 45 + row * 120 + (hash(n, 6.3, 1.9) - 0.5) * 36;
+      const basePersp = 0.85 + hash(n, 7.7, 3.1) * 0.5;
+      const phase = hash(n, 9.1, 5.5) * Math.PI * 2;
+      const wx = (tx - 200) / basePersp;
+      const wy = (ty - 200) / basePersp;
+      const wz = eyeZ - eyeZ / basePersp + 20 * Math.sin(f * 0.4 + phase);
+      const persp = eyeZ / Math.max(72, eyeZ - wz);
+      const bx = 200 + wx * persp;
+      const by = 200 + wy * persp;
+      for (let j = 0; j < 512; j++) {
+        const a = -Math.PI + j * (Math.PI / 256);
+        for (let k = 0; k < 200; k++) {
+          const i = 1 - k * 0.005;
+          const px = noise(i - f, f / 3 + n, a) * i * 400 + bx;
+          const py = noise(f / 2 + n, i - f, a) * i * 400 + by;
+          if (px < 0 || px >= 400 || py < 0 || py >= 400) continue;
+          const idx = (py | 0) * 400 + (px | 0);
+          const alpha = (1 - i) * (400 / 22 / 255);
+          coverage[idx] = alpha + coverage[idx] * (1 - alpha);
+        }
+      }
+    }
+    const data = image.data;
+    for (let p = 0; p < coverage.length; p++) {
+      data[p * 4] = 255;
+      data[p * 4 + 1] = 255;
+      data[p * 4 + 2] = 255;
+      data[p * 4 + 3] = Math.round(coverage[p] * 255);
+    }
+    layerContext.putImageData(image, 0, 0);
+    context.fillStyle = window.__pwBackgroundColor || '#000';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(layerCanvas, 0, 0, canvas.width, canvas.height);
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  draw();
+</script>
+</body>
+</html>

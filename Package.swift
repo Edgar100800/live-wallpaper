@@ -23,6 +23,8 @@ let package = Package(
                 .copy("Resources/ChromaticRingsWallpaper"),
                 .copy("Resources/SphereTorusWallpaper"),
                 .copy("Resources/JellyfishPointsWallpaper"),
+                .copy("Resources/NebulaWallpaper"),
+                .copy("Resources/TorusKnotWallpaper"),
                 .copy("Resources/generated")
             ]
         ),

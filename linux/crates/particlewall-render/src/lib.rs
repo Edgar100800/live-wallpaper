@@ -34,7 +34,7 @@ impl Uniforms {
     pub const VERTEX_COUNT_MODEL0: u32 = 10_000;
 
     /// Instance (particle) count per model index, mirroring Swift vertexCount.
-    pub const MODEL_VERTEX_COUNTS: [u32; 10] = [
+    pub const MODEL_VERTEX_COUNTS: [u32; 12] = [
         10_000,             // 0 parametric-waves
         30_000,             // 1 twin-vortex
         30_000,             // 2 orbital-bloom
@@ -45,10 +45,12 @@ impl Uniforms {
         6_225 * 8,          // 7 chromatic-rings
         40 * 80,            // 8 sphere-torus
         10_000,             // 9 jellyfish-points
+        9 * 512 * 200,      // 10 nebula
+        20_000,             // 11 tesseract (kept id "torus-knot")
     ];
 
     pub fn model_vertex_count(model: u32) -> u32 {
-        Self::MODEL_VERTEX_COUNTS[(model as usize).min(9)]
+        Self::MODEL_VERTEX_COUNTS[(model as usize).min(11)]
     }
 
     pub fn defaults(aspect: f32, viewport_px: [f32; 2]) -> Self {

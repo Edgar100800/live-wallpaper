@@ -38,6 +38,38 @@ Rama de trabajo: `feature/linux-port`.
 - [x] Noveno fondo compartido "Toro de Esferas" (`sphere-torus`) en ambas plataformas.
 - [x] Décimo fondo compartido "Medusa de Puntos" (`jellyfish-points`, dweet de
       10k puntos con XOR JS `y^8` y envoltura de tiempo a 8·PI) en ambas plataformas.
+- [x] Undécimo fondo compartido "Nebulosa" (`nebula`, dweet de 921.600 puntos:
+      9 capas × 512 ángulos × 200 radios con el value-noise del motor como
+      sustituto del Perlin de p5) con variaciones propias ajustadas por
+      iteración visual con el usuario: las 9 nubes ocupan objetivos estables
+      en una cuadrícula 3×3 con jitter de ±18 px: las columnas compensan el
+      aspecto panorámico para caer en los tercios físicos de la pantalla y
+      las filas usan 45/165/285 px para dejar visibles sus estelas. Cada nube
+      tiene una profundidad determinista (perspectiva 0.85..1.35) y respira
+      ±20 px sobre Z, con fases propias y un ciclo de ~52 s, mediante la
+      perspectiva p5 WEBGL (eyeZ = 300/tan(PI/6)); no hay órbita que pueda
+      reagrupar temporalmente la formación. La dispersión final conserva por
+      elección del usuario el sesgo original `flowNoise(...) * i * 400` y el
+      tamaño completo de cada nube. Incluyó un fix de contrato: la referencia CPU ahora
+      aplica `fract(x) = x - floor(x)` en `flow_hash`/`flow_noise`, igual
+      que el WGSL (Rust `f32::fract` preserva el signo y divergía con
+      coordenadas negativas; los fixtures existentes no cambiaron).
+- [x] Duodécimo fondo compartido "Tesseract Cuántico" (id técnico `torus-knot`,
+      20000 puntos portados del THREE.js del usuario: 350 bloques wireframe
+      punteados sobre un nudo (2,5) en 4 carriles escalonados + 5% de polvo
+      estelar con titileo). Marco local analítico con retorcido del haz,
+      rotación global Rx(0.11t)·Ry(0.17t) y presentación adaptada al lenguaje
+      visual de ParticleWall: canvas 400, mundo ×2.2, cámara p5 WEBGL
+      (eyeZ=200/tan(PI/6)), color monocromo del usuario y puntos uniformes
+      (`pointScale=1`). Aristas, caras punteadas, esquinas, pulsos y polvo
+      conservan su jerarquía mediante alpha (1/0.4, +0.4, impulso y
+      0.15+twinkle·0.85), sin niebla, bloom, cámara THREE ni lerp por partícula.
+      Contrato FR-GPU-07 estructural para el modelo 11: los hashes
+      fract(sin(·)·43758) del sketch son caóticos por muestra en f32, así
+      que la paridad GPU verifica invarianzas (tamaño/color, alpha y finitud)
+      y el fixture fija la referencia CPU. Registro en ambas
+      plataformas (contratos, daemon Linux, app macOS) con fallback HTML
+      propio; fixture + MSL regenerados.
 - [x] M3 (parcial): multi-output, persistencia en `~/.config/particlewall/config.json`
       (wallpaper, colores, perfiles), controles de tamaño de partícula (0.25–8) e
       intensidad/brillo (0.25–10) con ventana GTK de sliders, scroll en el tray,
@@ -52,16 +84,18 @@ Rama de trabajo: `feature/linux-port`.
 
 - `cargo test` verde en los tres crates (los de render SIEMPRE con
   `--test-threads=1`: cuatro contextos GPU paralelos cuelgan el driver NVIDIA).
-- Fixtures numéricos regenerados para los diez fondos; paridad CPU-GPU en verde
-  (Medusa con tolerancia dedicada: `cos(i - t/4)` evalúa hasta i=9999).
+- Fixtures numéricos regenerados para los doce fondos; paridad CPU-GPU en verde
+  (Medusa y Nebulosa con tolerancias dedicadas: reducción de argumentos en
+  `cos(i - t/4)` hasta i=9999 y contracción FMA del value-noise, FR-GPU-07).
 - `tools/xtask -- shadergen --check` sin drift entre WGSL y MSL generado.
-- Verificaciones en vivo con capturas: los diez fondos, sliders de ajustes,
+- Verificaciones en vivo con capturas: los once fondos (Nebulosa con su
+  formación balanceada 3×3 y profundidad animada), sliders de ajustes,
   launcher (`gtk-launch particlewall`) y pausa/reanudación por energía.
 
 ### Pendiente del port
 
 - [ ] Verificación en el Mac físico: `swift test` + `build-app.sh` con el MSL
-      regenerado y los nueve fondos compartidos.
+      regenerado y los once fondos compartidos.
 - [ ] M3, remanente: importador y biblioteca de wallpapers de usuario en Linux.
 - [ ] M5, remanente: documentación de operación y PKGBUILD (si se aprueba).
 - [ ] (Opcional) sincronizar en vivo las etiquetas de la ventana de ajustes tras

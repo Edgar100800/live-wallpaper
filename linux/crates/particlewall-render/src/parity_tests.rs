@@ -13,7 +13,7 @@ fn fixture_path(module: &str) -> std::path::PathBuf {
 }
 
 /// Selected ids per model, respecting each model's instance count.
-const SAMPLE_IDS: [&[u32]; 10] = [
+const SAMPLE_IDS: [&[u32]; 12] = [
     &[0, 1, 234, 4999, 9998, 9999],
     &[0, 1, 7, 15000, 29998, 29999],
     &[0, 1, 799, 12000, 29998, 29999],
@@ -24,6 +24,8 @@ const SAMPLE_IDS: [&[u32]; 10] = [
     &[0, 7, 8, 6000, 49798, 49799],
     &[0, 79, 80, 1600, 3198, 3199],
     &[0, 1, 345, 5000, 8000, 9999],
+    &[0, 1, 199, 51200, 921598, 921599],
+    &[0, 1, 999, 1000, 10500, 19999],
 ];
 
 const SAMPLE_TIMES: [f32; 4] = [0.0, 1.7, 13.3, 41.25];
@@ -80,7 +82,7 @@ fn reference_cases(model: u32) -> serde_json::Value {
     })
 }
 
-pub const MODULE_IDS: [&str; 10] = [
+pub const MODULE_IDS: [&str; 12] = [
     "parametric-waves",
     "twin-vortex",
     "orbital-bloom",
@@ -91,11 +93,13 @@ pub const MODULE_IDS: [&str; 10] = [
     "chromatic-rings",
     "sphere-torus",
     "jellyfish-points",
+    "nebula",
+    "torus-knot",
 ];
 
 #[test]
 fn cpu_reference_matches_committed_fixture() {
-    for model in 0..10u32 {
+    for model in 0..12u32 {
         let path = fixture_path(MODULE_IDS[model as usize]);
         if std::env::var("GENERATE_FIXTURES").is_ok() {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -316,7 +320,7 @@ fn upload_flow_buffers(ctx: &GpuCtx, flow: &cpu::FlowState) -> (wgpu::Buffer, wg
 #[test]
 fn gpu_wgsl_matches_cpu_reference() {
     let ctx = gpu_ctx();
-    for model in 0..10u32 {
+    for model in 0..12u32 {
         let flow = reference_flow(model);
         let (particles_buf, history_buf) = upload_flow_buffers(&ctx, &flow);
         let ids: Vec<u32> = SAMPLE_IDS[model as usize].to_vec();
@@ -409,18 +413,58 @@ fn gpu_wgsl_matches_cpu_reference() {
                 if model == 5 && flow.particles[id as usize][0] > 40_000.0 {
                     continue;
                 }
-                // Row layout: clip(2) + pointSize(1) + pad(1) + color(4).
+                // Model 11 (Tesseract) is hash-chaotic by design: the source
+                // dweet's `fract(sin(i*k)*43758.54)` stardust and stipple
+                // hashes amplify one-ULP sin/cos differences (a f32 product
+                // near 43000 carries an ULP of ~0.004 before the sawtooth)
+                // into full pixel offsets, so cross-implementation numeric
+                // equality is not the contract (FR-GPU-07, like the rain
+                // simulation). Verify point-size/color bounds and finiteness
+                // on both implementations instead.
+                if model == 11 {
+                    for g in &data[i * 8..i * 8 + 8] {
+                        assert!(g.is_finite(), "GPU non-finite model=11 id={id}");
+                    }
+                    let size = data[i * 8 + 2];
+                    assert!(
+                        (0.3..=16.0).contains(&size),
+                        "GPU sprite size {size} id={id}"
+                    );
+                    assert!(
+                        data[i * 8 + 7] > 0.0,
+                        "visible alpha must be positive id={id}"
+                    );
+                    for c in &data[i * 8 + 4..i * 8 + 8] {
+                        assert!(
+                            *c >= 0.0 && *c <= 1.6,
+                            "GPU color {c} out of range id={id}"
+                        );
+                    }
+                    let size_cpu = expected[2];
+                    assert!(
+                        (0.3..=16.0).contains(&size_cpu),
+                        "CPU sprite size {size_cpu} id={id}"
+                    );
+                    for c in &expected[3..7] {
+                        assert!(
+                            *c >= 0.0 && *c <= 1.6,
+                            "CPU color {c} out of range id={id}"
+                        );
+                    }
+                    continue;
+                }
                 let mut row = data[i * 8..i * 8 + 8].to_vec();
                 row.remove(3); // drop the padding slot
                 for (g, w) in row.iter().zip(expected.iter()) {
                     let diff = (g - w).abs();
-                    // Model 5 evaluates sin/cos at arguments up to prime*1e0
-                    // and model 9 at up to cos(i - t/4) with i = 9999:
-                    // argument-reduction rounding differs between the CPU
-                    // libm and GPU transcendentals (same f32 input, different
-                    // reduction quality), so both carry a numeric contract at
-                    // a relaxed absolute tolerance.
-                    let tol = if model == 5 || model == 9 {
+                    // Model 5 evaluates sin/cos at arguments up to prime*1e0,
+                    // model 9 at up to cos(i - t/4) with i = 9999, and
+                    // model 10 feeds negative coordinates into the value-noise
+                    // hash, whose sawtooth fract makes it chaotic under GPU
+                    // FMA contraction. All three carry a relaxed absolute
+                    // tolerance (FR-GPU-07); model 11 is checked structurally
+                    // above because its hashes are chaotic per-sample.
+                    let tol = if model == 5 || model == 9 || model == 10 {
                         4e-3
                     } else {
                         w.abs().max(1.0) * 1e-4

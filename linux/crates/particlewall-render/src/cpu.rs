@@ -74,7 +74,12 @@ pub fn hexagonal_rosette_pixel(id: u32, engine_time: f32) -> [f32; 2] {
 
 /// Value-noise hash shared by Lluvia de Ruido and Anillos Cromáticos.
 pub fn flow_hash(p: [f32; 3]) -> f32 {
-    let mut v = [p[0] * 0.1031, p[1] * 0.1031, p[2] * 0.1031].map(|x| x.fract());
+    // fract() here is WGSL fract: x - floor(x), always in [0, 1). Rust's
+    // f32::fract preserves the sign (x - trunc), which diverges from the
+    // WGSL as soon as a coordinate goes negative (Nebulosa samples a in
+    // [-PI, PI] and i - f below zero).
+    let mut v = [p[0] * 0.1031, p[1] * 0.1031, p[2] * 0.1031]
+        .map(|x| x - x.floor());
     let d = v[0] * (v[1] + 33.33) + v[1] * (v[2] + 33.33) + v[2] * (v[0] + 33.33);
     v = [v[0] + d, v[1] + d, v[2] + d];
     ((v[0] + v[1]) * v[2]).fract()
@@ -83,7 +88,12 @@ pub fn flow_hash(p: [f32; 3]) -> f32 {
 /// Smooth value noise; matches flowNoise in the WGSL.
 pub fn flow_noise(p: [f32; 3]) -> f32 {
     let cell = [p[0].floor(), p[1].floor(), p[2].floor()];
-    let mut fraction = [p[0].fract(), p[1].fract(), p[2].fract()];
+    // Same WGSL fract semantics as flow_hash: x - floor(x).
+    let mut fraction = [
+        p[0] - p[0].floor(),
+        p[1] - p[1].floor(),
+        p[2] - p[2].floor(),
+    ];
     for f in &mut fraction {
         *f = *f * *f * (3.0 - 2.0 * *f);
     }
@@ -282,6 +292,237 @@ pub fn jellyfish_pixel(id: u32, engine_time: f32) -> [f32; 2] {
     [q + 60.0 * c.cos() + 200.0, q * c.sin() + d * 29.0 - 170.0]
 }
 
+/// Nebulosa (400px canvas). Nine soft clouds swept by two noise fields;
+/// p5's Perlin noise is represented by flow_noise (same stand-in as the
+/// rain and rings models). Variation over the source dweet: the clouds
+/// occupy a jittered 3x3 layout across the canvas. Each base has a
+/// deterministic depth and gently breathes along Z through the p5 WEBGL
+/// perspective (eyeZ = 300/tan(PI/6)), avoiding orbital clustering.
+/// Updates `trail_scale` with the stroke alpha ramp (1-i)*400/22/255.
+pub fn nebula_pixel(id: u32, engine_time: f32, horizontal_span: f32,
+                    trail_scale: &mut f32, point_scale: &mut f32) -> [f32; 2] {
+    let f = engine_time;
+    let layer = id / (512 * 200);
+    let j = (id / 200) % 512;
+    let k = id % 200;
+    let n = 8.0 - layer as f32;
+    let a = -3.14159265 + j as f32 * 0.0122718463; // PI/256
+    let i = 1.0 - k as f32 * 0.005;
+    let eye_z = 519.61524;
+    let column = (layer % 3) as f32;
+    let row = (layer / 3) as f32;
+    let jitter = [
+        (flow_hash([n, 1.9, 6.3]) - 0.5) * 36.0,
+        (flow_hash([n, 6.3, 1.9]) - 0.5) * 36.0,
+    ];
+    let target = [
+        200.0 + ((column - 1.0) * 140.0 + jitter[0]) * horizontal_span,
+        45.0 + row * 120.0 + jitter[1],
+    ];
+    let base_perspective = 0.85 + flow_hash([n, 7.7, 3.1]) * 0.5;
+    let phase = flow_hash([n, 9.1, 5.5]) * 6.28318531;
+    let world = [
+        (target[0] - 200.0) / base_perspective,
+        (target[1] - 200.0) / base_perspective,
+        eye_z - eye_z / base_perspective + 20.0 * (f * 0.4 + phase).sin(),
+    ];
+    let perspective = eye_z / (eye_z - world[2]).max(72.0);
+    *point_scale = perspective;
+    *trail_scale = (1.0 - i) * (400.0 / 22.0 / 255.0);
+    [
+        200.0 + world[0] * perspective
+            + flow_noise([i - f, f / 3.0 + n, a]) * i * 400.0,
+        200.0 + world[1] * perspective
+            + flow_noise([f / 2.0 + n, i - f, a]) * i * 400.0,
+    ]
+}
+
+/// Tesseract Cuántico (400px canvas). Preserves the source THREE.js model's
+/// knot, tracks, analytic frame, bundle twist, flow, blocks and stardust,
+/// but uses ParticleWall's p5 WEBGL perspective, monochrome user tint and
+/// fixed-size points. Structural hierarchy is carried by alpha instead of
+/// HSL color, fog or perspective sprite attenuation.
+pub fn tesseract_pixel(id: u32, engine_time: f32, trail_scale: &mut f32,
+                       point_scale: &mut f32) -> [f32; 2] {
+    let fract = |x: f32| x - x.floor();
+    let time = engine_time;
+    let macro_radius = 50.0f32;
+    let micro_radius = 15.0f32;
+    let p_loops = 2.0f32;
+    let q_twists = 5.0f32;
+    let block_count = 350.0f32;
+    let block_length = 7.0f32;
+    let block_size = 2.5f32;
+    let stagger = 4.0f32;
+    let bundle_twist = 1.5f32;
+    let flow = 0.3f32;
+    let stardust_count = 1000.0f32; // 5% of 20000
+    let remaining_count = 19000.0f32;
+
+    let world;
+    let mut point_alpha;
+
+    if (id as f32) < stardust_count {
+        let fi = id as f32;
+        let sd1 = fract((fi * 11.11).sin() * 43758.54);
+        let sd2 = fract((fi * 22.22).cos() * 43758.54);
+        let sd3 = fract((fi * 33.33).sin() * 43758.54);
+
+        let radius_dist = macro_radius * 1.2 + sd1 * 80.0;
+        let theta = sd2 * 6.28318531;
+        let phi = (sd3 * 2.0 - 1.0).acos();
+
+        let sx = radius_dist * phi.sin() * theta.cos()
+            + (time * 0.2 + fi * 0.1).sin() * 10.0;
+        let sy = radius_dist * phi.sin() * theta.sin()
+            + (time * 0.25 + fi * 0.1).cos() * 10.0;
+        let sz = radius_dist * phi.cos() + (time * 0.15 + fi * 0.2).sin() * 10.0;
+        world = [sx, sy, sz];
+
+        let twinkle = ((time * 3.0 + fi).sin() + 1.0) * 0.5;
+        let twinkle = twinkle.powi(8);
+        point_alpha = 0.15 + twinkle * 0.85;
+    } else {
+        let i_rem = id as f32 - stardust_count;
+        let ppb = remaining_count / block_count;
+        let block_id = (i_rem / ppb).floor();
+        let local_id = i_rem - block_id * ppb;
+
+        let num_wire = ppb * 0.85;
+        let is_wire = local_id < num_wire;
+
+        let t_base = block_id / block_count * 6.28318531;
+        let t = t_base + time * flow * 0.1;
+
+        let cos_qt = (q_twists * t).cos();
+        let sin_qt = (q_twists * t).sin();
+        let cos_pt = (p_loops * t).cos();
+        let sin_pt = (p_loops * t).sin();
+
+        let ring_radius = macro_radius + micro_radius * cos_qt;
+        let center = [ring_radius * cos_pt, ring_radius * sin_pt,
+                      micro_radius * sin_qt];
+
+        let tangent_raw = [
+            -p_loops * ring_radius * sin_pt - q_twists * micro_radius * sin_qt * cos_pt,
+            p_loops * ring_radius * cos_pt - q_twists * micro_radius * sin_qt * sin_pt,
+            q_twists * micro_radius * cos_qt,
+        ];
+        let t_len = (tangent_raw[0] * tangent_raw[0]
+            + tangent_raw[1] * tangent_raw[1]
+            + tangent_raw[2] * tangent_raw[2]).sqrt() + 0.0001;
+        let tangent = [tangent_raw[0] / t_len, tangent_raw[1] / t_len,
+                       tangent_raw[2] / t_len];
+
+        let torus_normal = [cos_pt, sin_pt, 0.0];
+        let cross = |a: [f32; 3], b: [f32; 3]| {
+            [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
+             a[0] * b[1] - a[1] * b[0]]
+        };
+        let b_raw = cross(tangent, torus_normal);
+        let b_len = (b_raw[0] * b_raw[0] + b_raw[1] * b_raw[1]
+            + b_raw[2] * b_raw[2]).sqrt() + 0.0001;
+        let binormal = [b_raw[0] / b_len, b_raw[1] / b_len, b_raw[2] / b_len];
+        let normal = cross(binormal, tangent);
+
+        let twist_angle = t_base * bundle_twist + time * flow * 0.5;
+        let (cos_tw, sin_tw) = (twist_angle.cos(), twist_angle.sin());
+        let fnv = [normal[0] * cos_tw - binormal[0] * sin_tw,
+                   normal[1] * cos_tw - binormal[1] * sin_tw,
+                   normal[2] * cos_tw - binormal[2] * sin_tw];
+        let fb = [normal[0] * sin_tw + binormal[0] * cos_tw,
+                  normal[1] * sin_tw + binormal[1] * cos_tw,
+                  normal[2] * sin_tw + binormal[2] * cos_tw];
+
+        let track = block_id % 4.0;
+        let c1 = if track % 2.0 < 0.5 { 1.0 } else { -1.0 };
+        let c2 = if track < 2.0 { 1.0 } else { -1.0 };
+        let block_center = [
+            center[0] + fnv[0] * (c1 * stagger) + fb[0] * (c2 * stagger),
+            center[1] + fnv[1] * (c1 * stagger) + fb[1] * (c2 * stagger),
+            center[2] + fnv[2] * (c1 * stagger) + fb[2] * (c2 * stagger),
+        ];
+
+        let local;
+        let mut u = 0.0f32;
+        if is_wire {
+            let edge_pos_raw = local_id / num_wire * 12.0;
+            let edge_id = 11.0f32.min(edge_pos_raw.floor());
+            u = (edge_pos_raw - edge_id) * 2.0 - 1.0;
+
+            let axis = edge_id % 3.0;
+            let corner = (edge_id / 3.0).floor();
+            let e1 = if corner % 2.0 > 0.5 { 1.0 } else { -1.0 };
+            let e2 = if corner > 1.5 { 1.0 } else { -1.0 };
+
+            if axis < 0.5 {
+                local = [u, e1, e2];
+            } else if axis < 1.5 {
+                local = [e1, u, e2];
+            } else {
+                local = [e1, e2, u];
+            }
+        } else {
+            let s1 = fract((local_id * 12.989 + block_id * 78.233).sin() * 43758.545);
+            let s2 = fract((local_id * 39.346 + block_id * 53.211).cos() * 43758.545);
+            let s3 = fract((local_id * 73.156 + block_id * 12.742).sin() * 43758.545);
+            let s4 = fract((local_id * 23.456 + block_id * 89.123).cos() * 43758.545);
+
+            let face_axis = 2.0f32.min((s1 * 3.0).floor());
+            let sign_face = if s2 > 0.5 { 1.0 } else { -1.0 };
+            let u2 = s3 * 2.0 - 1.0;
+            let v2 = s4 * 2.0 - 1.0;
+
+            if face_axis < 0.5 {
+                local = [sign_face, u2, v2];
+            } else if face_axis < 1.5 {
+                local = [u2, sign_face, v2];
+            } else {
+                local = [u2, v2, sign_face];
+            }
+        }
+
+        let stretched = [local[0] * block_length, local[1] * block_size,
+                         local[2] * block_size];
+        world = [
+            block_center[0] + stretched[0] * tangent[0] + stretched[1] * fnv[0]
+                + stretched[2] * fb[0],
+            block_center[1] + stretched[0] * tangent[1] + stretched[1] * fnv[1]
+                + stretched[2] * fb[1],
+            block_center[2] + stretched[0] * tangent[2] + stretched[1] * fnv[2]
+                + stretched[2] * fb[2],
+        ];
+
+        point_alpha = if is_wire { 1.0 } else { 0.4 };
+
+        if is_wire {
+            let pulse_env = (t_base * p_loops * 12.0 - time * 5.0).sin();
+            if pulse_env > 0.8 {
+                point_alpha += (pulse_env - 0.8) * 1.5;
+            }
+            let is_corner = if u.abs() > 0.90 { 1.0 } else { 0.0 };
+            point_alpha += is_corner * 0.4;
+        }
+        point_alpha = point_alpha.clamp(0.0, 1.0);
+    }
+
+    // Global spin: rotateX(time*0.11) then rotateY(time*0.17).
+    let (cgx, sgx) = ((time * 0.11).cos(), (time * 0.11).sin());
+    let (cgy, sgy) = ((time * 0.17).cos(), (time * 0.17).sin());
+    let y1 = world[1] * cgx - world[2] * sgx;
+    let z1 = world[1] * sgx + world[2] * cgx;
+    let x2 = world[0] * cgy + z1 * sgy;
+    let z2 = -world[0] * sgy + z1 * cgy;
+
+    let model_scale = 2.2;
+    let scaled = [x2 * model_scale, y1 * model_scale, z2 * model_scale];
+    let eye_z = 346.41016; // 200 / tan(PI/6)
+    let perspective = eye_z / (eye_z - scaled[2]).max(72.0);
+    *trail_scale = point_alpha;
+    *point_scale = 1.0;
+    [200.0 + scaled[0] * perspective, 200.0 + scaled[1] * perspective]
+}
+
 /// Full shared-canvas transform, mirroring the WGSL block. Returns
 /// `[clip_x, clip_y, point_size_px, r, g, b, a]`.
 pub fn model_sample(id: u32, model: u32, u: &Uniforms, flow: &FlowState) -> [f32; 7] {
@@ -341,6 +582,20 @@ pub fn model_sample(id: u32, model: u32, u: &Uniforms, flow: &FlowState) -> [f32
             // 8*PI wrap keeps t, t/2, t/4 and 4t seamless (see the WGSL).
             let t = (u.time * 1.57079633) % 25.13274123;
             pixel = jellyfish_pixel(id, t);
+        }
+        10 => {
+            // 0.005 per p5 frame at a 60 FPS baseline; f stays unbounded
+            // because the noise fields are not periodic.
+            let horizontal_span = if u.screen_fit[0] < 0.5 { u.aspect } else { 1.0 };
+            pixel = nebula_pixel(id, u.time * 0.3, horizontal_span, &mut trail_alpha,
+                                 &mut point_scale);
+        }
+        11 => {
+            // Tesseract Cuántico: time stays unbounded (no common period
+            // across the flow terms); presentation uses shared points.
+            pixel = tesseract_pixel(id, u.time, &mut trail_alpha,
+                                    &mut point_scale);
+            canvas_size = 400.0;
         }
         _ => {
             let trail_count = 8u32;

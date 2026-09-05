@@ -47,7 +47,13 @@ final class LibraryManager: ObservableObject {
               renderer: .metalSphereTorus),
         .init(name: "Medusa de Puntos",
               resourceName: "JellyfishPointsWallpaper",
-              renderer: .metalJellyfishPoints)
+              renderer: .metalJellyfishPoints),
+        .init(name: "Nebulosa",
+              resourceName: "NebulaWallpaper",
+              renderer: .metalNebula),
+        .init(name: "Tesseract Cuántico",
+              resourceName: "TorusKnotWallpaper",
+              renderer: .metalTorusKnot)
     ]
 
     private init() {

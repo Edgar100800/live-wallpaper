@@ -50,6 +50,8 @@ fn gpu_model_for(wallpaper_id: &str) -> Option<u32> {
         "ChromaticRingsWallpaper" => 7,
         "SphereTorusWallpaper" => 8,
         "JellyfishPointsWallpaper" => 9,
+        "NebulaWallpaper" => 10,
+        "TorusKnotWallpaper" => 11,
         _ => return None,
     })
 }
@@ -605,7 +607,29 @@ pub fn run() {
         .spawn();
         match tray_result {
             Ok(handle) => state.borrow_mut().tray = Some(handle),
-            Err(e) => eprintln!("pw: tray unavailable: {e}"),
+            Err(e) => {
+                eprintln!("pw: tray unavailable, retrying: {e}");
+                let retry_state = state.clone();
+                let retry_tx = tx.clone();
+                glib::timeout_add_seconds_local(2, move || {
+                    let result = ParticleWallTray {
+                        flags: flags.clone(),
+                        tx: retry_tx.clone(),
+                        current: current_id.clone(),
+                        profiles: profiles_ui.clone(),
+                        appearance: appearance_ui.clone(),
+                    }
+                    .spawn();
+                    match result {
+                        Ok(handle) => {
+                            retry_state.borrow_mut().tray = Some(handle);
+                            println!("pw: tray registered after retry");
+                            glib::ControlFlow::Break
+                        }
+                        Err(_) => glib::ControlFlow::Continue,
+                    }
+                });
+            }
         }
 
         // Windows for every output; children come from switch_renderer.

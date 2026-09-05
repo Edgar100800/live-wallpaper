@@ -9,6 +9,8 @@ use serde::Deserialize;
 pub const MODULE_PARAMETRIC_WAVES: &str = "parametric-waves";
 pub const MODULE_SPHERE_TORUS: &str = "sphere-torus";
 pub const MODULE_JELLYFISH_POINTS: &str = "jellyfish-points";
+pub const MODULE_NEBULA: &str = "nebula";
+pub const MODULE_TORUS_KNOT: &str = "torus-knot";
 pub const MODULE_WEB: &str = "web";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +26,8 @@ pub enum RendererKind {
     MetalChromaticRings,
     MetalSphereTorus,
     MetalJellyfishPoints,
+    MetalNebula,
+    MetalTorusKnot,
 }
 
 impl RendererKind {
@@ -40,6 +44,8 @@ impl RendererKind {
             "metal-chromatic-rings" => Self::MetalChromaticRings,
             "metal-sphere-torus" => Self::MetalSphereTorus,
             "metal-jellyfish-points" => Self::MetalJellyfishPoints,
+            "metal-nebula" => Self::MetalNebula,
+            "metal-torus-knot" => Self::MetalTorusKnot,
             _ => return None,
         })
     }
@@ -57,6 +63,8 @@ impl RendererKind {
             Self::MetalChromaticRings => "chromatic-rings",
             Self::MetalSphereTorus => MODULE_SPHERE_TORUS,
             Self::MetalJellyfishPoints => MODULE_JELLYFISH_POINTS,
+            Self::MetalNebula => MODULE_NEBULA,
+            Self::MetalTorusKnot => MODULE_TORUS_KNOT,
         }
     }
 }

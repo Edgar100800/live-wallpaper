@@ -30,6 +30,8 @@ fn pretty_name(folder: &str) -> String {
         "ChromaticRingsWallpaper" => "Anillos Cromáticos",
         "SphereTorusWallpaper" => "Toro de Esferas",
         "JellyfishPointsWallpaper" => "Medusa de Puntos",
+        "NebulaWallpaper" => "Nebulosa",
+        "TorusKnotWallpaper" => "Tesseract Cuántico",
         other => other,
     }
     .into()

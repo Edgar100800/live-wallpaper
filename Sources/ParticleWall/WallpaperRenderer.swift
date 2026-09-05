@@ -250,7 +250,7 @@ final class MetalParticleRenderer: NSObject, WallpaperRenderer, MTKViewDelegate 
 
     var controlDescriptors: [WallpaperControlDescriptor] {
         switch kind {
-        case .metalNoiseRain:
+        case .metalNoiseRain, .metalTorusKnot:
             Self.flowDescriptors
         case .metalPrimeSpiral:
             Self.screenAdaptedDescriptors
@@ -279,6 +279,8 @@ final class MetalParticleRenderer: NSObject, WallpaperRenderer, MTKViewDelegate 
         case .metalChromaticRings: 7
         case .metalSphereTorus: 8
         case .metalJellyfishPoints: 9
+        case .metalNebula: 10
+        case .metalTorusKnot: 11
         case .web: 0
         }
     }
@@ -295,6 +297,8 @@ final class MetalParticleRenderer: NSObject, WallpaperRenderer, MTKViewDelegate 
             Self.chromaticRingPointCount * Self.chromaticRingTrailCount
         case .metalSphereTorus: 40 * 80
         case .metalJellyfishPoints: 10_000
+        case .metalNebula: 9 * 512 * 200
+        case .metalTorusKnot: 20_000
         case .web: 0
         }
     }
