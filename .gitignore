@@ -21,3 +21,4 @@ xcuserdata/
 # Rust build artifacts (Linux port)
 linux/target/
 tools/xtask/target/
+tools/ascii-converter/target/

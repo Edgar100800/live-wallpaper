@@ -47,6 +47,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handleCLIRendererSmokeTest() {
         guard CommandLine.arguments.contains("--renderer-smoke-test") else { return }
         for (index, kind) in WallpaperRendererKind.nativeMetalCases.enumerated() {
+            if kind == .asciiVideo {
+                NSLog("ParticleWall: renderer smoke test skips ascii-video; it requires imported frame data")
+                continue
+            }
             let window = NSWindow(
                 contentRect: NSRect(x: -400 - index * 270, y: -400, width: 256, height: 256),
                 styleMask: [.borderless],
@@ -257,7 +261,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func toggleGallery() {
-        if let window = galleryWindow, window.isVisible {
+        if let window = galleryWindow,
+           window.isVisible,
+           window.isOnActiveSpace,
+           !window.isMiniaturized {
             NotificationCenter.default.post(name: .pwGalleryDidHide, object: nil)
             window.orderOut(nil)
         } else {
@@ -274,13 +281,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
             window.setContentSize(NSSize(width: 720, height: 480))
             window.minSize = NSSize(width: 520, height: 360)
+            window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
             window.isReleasedWhenClosed = false
             window.delegate = self
             window.center()
             galleryWindow = window
         }
-        NSApp.activate(ignoringOtherApps: true)
-        galleryWindow?.makeKeyAndOrderFront(nil)
+        if let window = galleryWindow {
+            presentOnCurrentSpace(window)
+        }
     }
 
     @objc private func openSettings() {
@@ -289,12 +298,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let window = NSWindow(contentViewController: hosting)
             window.title = "Ajustes de ParticleWall"
             window.styleMask = [.titled, .closable]
+            window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
             window.isReleasedWhenClosed = false
             window.center()
             settingsWindow = window
         }
-        NSApp.activate(ignoringOtherApps: true)
-        settingsWindow?.makeKeyAndOrderFront(nil)
+        if let window = settingsWindow {
+            presentOnCurrentSpace(window)
+        }
+    }
+
+    private func presentOnCurrentSpace(_ window: NSWindow) {
+        if window.isMiniaturized {
+            window.deminiaturize(nil)
+        }
+        // Move/order the requested window before activating the app, so its
+        // previously active window does not take us back to another Space.
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate()
     }
 
     @objc private func quit() {

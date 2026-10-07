@@ -15,7 +15,7 @@ use std::time::Instant;
 use webkit6::prelude::*;
 use webkit6::{
     NavigationPolicyDecision, PolicyDecisionType, UserContentInjectedFrames,
-    UserScript, UserScriptInjectionTime, WebView,
+    Settings, UserScript, UserScriptInjectionTime, WebView,
 };
 
 #[path = "layer.rs"]
@@ -263,9 +263,7 @@ fn switch_renderer(
     let windows: Vec<(String, ApplicationWindow)> = state.borrow().windows.clone();
 
     if gpu_capable {
-        // Tear down web children.
-        let webviews = std::mem::take(&mut state.borrow_mut().webviews);
-        drop(webviews);
+        clear_web_children(state, &windows);
 
         // Idempotency: already presenting this wallpaper on the GPU.
         {
@@ -362,7 +360,7 @@ fn switch_renderer(
 
         if !outputs.is_empty() && gpu_err.is_none() {
             // Hide the (empty) GTK layer windows so they don't cover the GPU
-            // surfaces on the same Background layer.
+            // surfaces on the same Bottom layer.
             for (_, w) in &windows {
                 w.set_visible(false);
             }
@@ -408,6 +406,19 @@ fn switch_renderer(
     }
 }
 
+fn clear_web_children(
+    state: &Rc<RefCell<control::DaemonState>>,
+    windows: &[(String, ApplicationWindow)],
+) {
+    let webviews = std::mem::take(&mut state.borrow_mut().webviews);
+    for (_, webview) in &webviews {
+        webview.stop_loading();
+    }
+    for (_, window) in windows {
+        window.set_child(None::<&gtk4::Widget>);
+    }
+}
+
 fn spawn_web_child(
     state: &Rc<RefCell<control::DaemonState>>,
     window: &ApplicationWindow,
@@ -417,7 +428,26 @@ fn spawn_web_child(
     let Some(wp) = library::find(wallpaper_id) else { return };
     let resources_root = library::resources_dir();
 
-    let webview = WebView::builder().build();
+    // Reuse the document host for this output instead of retaining one per apply.
+    let existing = state.borrow().webviews.iter()
+        .find(|(output, _)| output == id)
+        .map(|(_, webview)| webview.clone());
+    if let Some(webview) = existing {
+        webview.user_content_manager().unwrap().remove_all_scripts();
+        attach_scripts(
+            &webview,
+            state.borrow().flags.effective_paused(),
+            state.borrow().flags.fps_cap.load(std::sync::atomic::Ordering::Relaxed),
+        );
+        webview.load_uri(&format!("file://{}", wp.index.display()));
+        return;
+    }
+
+    let settings = Settings::builder()
+        .allow_file_access_from_file_urls(true)
+        .enable_write_console_messages_to_stdout(true)
+        .build();
+    let webview = WebView::builder().settings(&settings).build();
     attach_scripts(
         &webview,
         state.borrow().flags.effective_paused(),
@@ -427,10 +457,12 @@ fn spawn_web_child(
 
     // Re-apply the saved appearance once each document finishes loading.
     {
-        let st = state.clone();
+        let st = Rc::downgrade(state);
         webview.connect_load_changed(move |wv, event| {
             if event == webkit6::LoadEvent::Finished {
-                if let Some(js) = st.borrow().colors_js() {
+                let Some(st) = st.upgrade() else { return };
+                let js = st.borrow().colors_js();
+                if let Some(js) = js {
                     wv.evaluate_javascript(
                         &js,
                         None,
@@ -531,9 +563,12 @@ pub fn run() {
 
         // Renderer switch hook used by the Apply command (main thread).
         {
-            let st = state.clone();
+            let st = Rc::downgrade(&state);
             let rt = gpu_rt.clone();
             state.borrow_mut().switch = Some(Rc::new(move |wallpaper_id: &str| {
+                let Some(st) = st.upgrade() else {
+                    return "{\"error\":\"daemon state unavailable\"}\n".into();
+                };
                 switch_renderer(&st, &rt, wallpaper_id)
             }));
         }
@@ -551,14 +586,9 @@ pub fn run() {
         // webviews otherwise).
         #[cfg(feature = "gpu")]
         {
-            let st = state.clone();
             let rt = gpu_rt.clone();
             state.borrow_mut().output_count = Some(Rc::new(move || {
-                if !rt.borrow().outputs.is_empty() {
-                    rt.borrow().outputs.len()
-                } else {
-                    st.borrow().webviews.len()
-                }
+                rt.borrow().outputs.len()
             }));
         }
 
@@ -662,4 +692,62 @@ pub fn run() {
     });
 
     let _ = app.run();
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    pub(crate) fn web_reapply_reuses_host_and_gpu_teardown_releases_it() {
+        gtk4::init().unwrap();
+        let app = Application::builder()
+            .application_id("com.particlewall.memory-tests")
+            .flags(gtk4::gio::ApplicationFlags::NON_UNIQUE)
+            .build();
+        app.register(None::<&gtk4::gio::Cancellable>).unwrap();
+        // Unmapped test window: never replaces or covers the user's wallpaper.
+        let window = ApplicationWindow::builder().application(&app).build();
+        gtk4::prelude::WidgetExt::realize(&window);
+        let windows = vec![("test-output".to_string(), window.clone())];
+        let state = Rc::new(RefCell::new(control::DaemonState {
+            webviews: Vec::new(),
+            flags: PlaybackFlags::default(),
+            wallpaper: "DefaultWallpaper".into(),
+            colors: Default::default(),
+            profiles: Vec::new(),
+            current: None,
+            profiles_ui: None,
+            appearance_ui: None,
+            tray: None,
+            windows: windows.clone(),
+            switch: None,
+            on_colors: None,
+            output_count: None,
+            open_settings: None,
+        }));
+        state.borrow().flags.paused.store(true, std::sync::atomic::Ordering::Relaxed);
+        spawn_web_child(&state, &window, "test-output", "DefaultWallpaper");
+        let original = state.borrow().webviews[0].1.downgrade();
+        for i in 0..30 {
+            let wallpaper = if i % 2 == 0 { "DefaultWallpaper" } else { "PrimeSpiralWallpaper" };
+            spawn_web_child(&state, &window, "test-output", wallpaper);
+            assert_eq!(state.borrow().webviews.len(), 1);
+            assert_eq!(state.borrow().webviews[0].1, original.upgrade().unwrap());
+        }
+        // The load callback must not own the daemon state.
+        assert_eq!(Rc::strong_count(&state), 1);
+        clear_web_children(&state, &windows);
+        assert!(state.borrow().webviews.is_empty());
+        assert!(window.child().is_none());
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while original.upgrade().is_some() && Instant::now() < deadline {
+            glib::MainContext::default().iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(original.upgrade().is_none(), "old WebView still retained");
+        spawn_web_child(&state, &window, "test-output", "DefaultWallpaper");
+        assert_eq!(state.borrow().webviews.len(), 1);
+        clear_web_children(&state, &windows);
+        window.destroy();
+    }
 }

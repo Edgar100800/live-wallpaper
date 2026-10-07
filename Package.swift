@@ -13,6 +13,8 @@ let package = Package(
                 .copy("Resources/three-esm"),
                 .copy("Resources/template.html"),
                 .copy("Resources/template-module.html"),
+                .copy("Resources/ASCII"),
+                .copy("Resources/SpiderManASCIIWallpaper"),
                 .copy("Resources/DefaultWallpaper"),
                 .copy("Resources/TwinVortexWallpaper"),
                 .copy("Resources/OrbitalBloomWallpaper"),

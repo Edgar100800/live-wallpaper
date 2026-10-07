@@ -90,7 +90,7 @@ final class MetalParticleRenderer: NSObject, WallpaperRenderer, MTKViewDelegate 
     private let bufferSizes: MTLBuffer
     private let startedAt = CACurrentMediaTime()
     private var frameCount: UInt64 = 0
-    private var animationTime: Float = 0
+    private(set) var animationTime: Float = 0
     private var lastDrawTime: CFTimeInterval?
     private var speed: Float = 1
     private var scale: Float = 1
@@ -103,7 +103,7 @@ final class MetalParticleRenderer: NSObject, WallpaperRenderer, MTKViewDelegate 
     private var verticalLimit: Float = 1
     private var particleColor = SIMD3<Float>(232 / 255, 1, 1)
     private var backgroundColor = SIMD3<Float>(3 / 255, 6 / 255, 9 / 255)
-    private var flowFrame: UInt32 = 0
+    private(set) var flowFrame: UInt32 = 0
     private var flowStepAccumulator: Float = 1
     private var graphEnabled = false
     private var graphDistance: Float = 0.085
@@ -410,7 +410,7 @@ final class MetalParticleRenderer: NSObject, WallpaperRenderer, MTKViewDelegate 
             flowHistory = history
             graphPositions = positions
             graphEdges = edges
-            bufferSizes = bufferSizes
+            self.bufferSizes = bufferSizes
         } catch {
             NSLog("ParticleWall: Metal pipeline failed: \(error)")
             return nil
@@ -549,12 +549,14 @@ final class MetalParticleRenderer: NSObject, WallpaperRenderer, MTKViewDelegate 
         let drawableSize = view.drawableSize
         let now = CACurrentMediaTime()
         var delta: Float = 0
-        if let lastDrawTime {
+        if !view.isPaused, let lastDrawTime {
             delta = Float(min(0.1, now - lastDrawTime))
             animationTime += delta * speed
         }
-        lastDrawTime = now
-        if kind == .metalNoiseRain {
+        lastDrawTime = view.isPaused ? nil : now
+        // Initialize the first flow frame even when loaded paused, then freeze
+        // simulation. Explicit snapshot draws must not consume pending steps.
+        if kind == .metalNoiseRain && (!view.isPaused || flowFrame == 0) {
             encodeFlowUpdates(in: buffer, delta: delta)
         }
 

@@ -234,60 +234,82 @@ impl WaylandGpu {
         let scale = out_info.lock().unwrap().scale.max(1);
 
         let surface: WlSurface = inner.compositor.create_surface(&inner.qh, ());
-        let layer_surface: ZwlrLayerSurfaceV1 = inner.shell.get_layer_surface(
-            &surface,
-            Some(output),
-            Layer::Background,
-            NAMESPACE.to_string(),
-            &inner.qh,
-            (),
-        );
-        layer_surface.set_anchor(Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right);
-        layer_surface.set_exclusive_zone(-1);
-        layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
-        if scale > 1 {
-            surface.set_buffer_scale(scale);
-        }
-        surface.commit();
-
-        // Wait for the compositor's configure (ack is sent by the handler).
-        inner.state.borrow_mut().configure = None;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(800);
-        let configured = loop {
-            if std::time::Instant::now() >= deadline {
-                return Err(format!("output {name} never sent a configure"));
-            }
-            inner
-                .queue
-                .borrow_mut()
-                .roundtrip(&mut inner.state.borrow_mut())
-                .map_err(|e| format!("wayland roundtrip: {e}"))?;
-            let mut state = inner.state.borrow_mut();
-            if state.closed {
-                return Err(format!("output {name} closed while configuring"));
-            }
-            if let Some(cfg) = state.configure.take() {
-                break cfg;
-            }
-        };
-        let (_serial, logical_w, logical_h) = configured;
-        let size_px = (logical_w.max(1) * scale as u32, logical_h.max(1) * scale as u32);
+        let layer_surface = map_background_role(inner, &surface, output, scale);
 
         let wl_display = inner.conn.backend().display_ptr();
         let wl_surface = surface.id().as_ptr();
-        if wl_display.is_null() || wl_surface.is_null() {
-            return Err(format!("null Wayland handles for {name}"));
-        }
-
-        Ok(GpuLayerSurface {
+        // Own both protocol objects before any fallible operation so Drop also
+        // destroys them on null handles, configure errors, or connection loss.
+        let mut session = GpuLayerSurface {
             _gpu: self.inner.clone(),
             surface,
             layer_surface,
             wl_display: wl_display.cast(),
             wl_surface: wl_surface.cast(),
-            size_px,
+            size_px: (1, 1),
             scale,
-        })
+        };
+        if wl_display.is_null() || wl_surface.is_null() {
+            return Err(format!("null Wayland handles for {name}"));
+        }
+        let (_serial, logical_w, logical_h) = wait_configure(inner, name)?;
+        session.size_px = (logical_w.max(1) * scale as u32, logical_h.max(1) * scale as u32);
+        Ok(session)
+    }
+}
+
+/// Assigns (or re-assigns) the full-output Bottom-layer role to
+/// `surface`: anchor, keyboard policy, buffer scale and commit. The
+/// configure wait happens separately in `wait_configure`. The Bottom layer
+/// sits above Background (where shells map their own static wallpapers, e.g.
+/// Omarchy's quickshell) regardless of map order, so the daemon never races
+/// for stacking at boot — the only alternative (unmapping/re-roling the
+/// surface feeding a live swapchain) segfaults the NVIDIA Wayland WSI.
+fn map_background_role(
+    inner: &Rc<Inner>,
+    surface: &WlSurface,
+    output: &WlOutput,
+    scale: i32,
+) -> ZwlrLayerSurfaceV1 {
+    let layer_surface: ZwlrLayerSurfaceV1 = inner.shell.get_layer_surface(
+        surface,
+        Some(output),
+        Layer::Bottom,
+        NAMESPACE.to_string(),
+        &inner.qh,
+        (),
+    );
+    layer_surface.set_anchor(Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right);
+    layer_surface.set_exclusive_zone(-1);
+    layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
+    if scale > 1 {
+        surface.set_buffer_scale(scale);
+    }
+    surface.commit();
+    layer_surface
+}
+
+/// Rounds the event queue until the layer surface gets its configure
+/// (acked by the handler). Returns the logical (width, height).
+fn wait_configure(inner: &Rc<Inner>, name: &str) -> Result<(u32, u32, u32), String> {
+    inner.state.borrow_mut().configure = None;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(800);
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("output {name} never sent a configure"));
+        }
+        inner
+            .queue
+            .borrow_mut()
+            .roundtrip(&mut inner.state.borrow_mut())
+            .map_err(|e| format!("wayland roundtrip: {e}"))?;
+        let mut state = inner.state.borrow_mut();
+        if state.closed {
+            return Err(format!("output {name} closed while configuring"));
+        }
+        if let Some(cfg) = state.configure.take() {
+            return Ok(cfg);
+        }
     }
 }
 

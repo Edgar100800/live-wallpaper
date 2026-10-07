@@ -1,0 +1,7 @@
+[package]
+name = "particlewall-ascii-converter"
+version = "0.1.0"
+edition = "2021"
+description = "Offline converter from video frames to ParticleWall ascii-video-v1 data"
+
+[dependencies]

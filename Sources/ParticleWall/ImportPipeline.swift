@@ -38,6 +38,8 @@ final class ImportPipeline {
         switch url.pathExtension.lowercased() {
         case "html", "htm":
             return try importHTMLFile(url)
+        case "asciivideo":
+            return try importASCIIFrameVideo(url)
         case "zip":
             return try importZip(url)
         case "js", "txt":
@@ -534,6 +536,25 @@ final class ImportPipeline {
         return try LibraryManager.shared.add(folderWithContents: staging,
                                              name: url.deletingPathExtension().lastPathComponent,
                                              source: "html")
+    }
+
+    private func importASCIIFrameVideo(_ url: URL) throws -> Wallpaper {
+        let staging = try makeStagingFolder()
+        defer { try? fm.removeItem(at: staging) }
+        let destination = staging.appendingPathComponent("clip.asciivideo")
+        try fm.copyItem(at: url, to: destination)
+        let placeholder = """
+        <!doctype html>
+        <html><body style=\"margin:0;background:#000\"></body></html>
+        """
+        try placeholder.write(to: staging.appendingPathComponent("index.html"),
+                             atomically: true, encoding: .utf8)
+        return try LibraryManager.shared.add(
+            folderWithContents: staging,
+            name: url.deletingPathExtension().lastPathComponent,
+            source: "ascii-video",
+            renderer: .asciiVideo
+        )
     }
 
     private func importFolder(_ url: URL, name: String, source: String) throws -> Wallpaper {

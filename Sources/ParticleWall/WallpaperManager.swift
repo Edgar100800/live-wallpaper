@@ -77,6 +77,9 @@ final class WallpaperManager {
         for (uuid, controller) in controllers where !currentUUIDs.contains(uuid) {
             controller.window.orderOut(nil)
             controllers.removeValue(forKey: uuid)
+            lastFrames.removeCachedImages(displayUUID: uuid)
+            snapshotCaptureTokens.removeValue(forKey: uuid)
+            persistedSnapshotKeys = persistedSnapshotKeys.filter { $0.displayUUID != uuid }
         }
 
         // Create/update controllers for connected screens.
@@ -498,6 +501,7 @@ final class WallpaperManager {
         for (displayUUID, controller) in controllers {
             guard let wallpaperID = controller.currentWallpaperID,
                   !controller.isDeepAsleep,
+                  !controller.effectivePaused,
                   snapshotCaptureTokens[displayUUID] == nil else { continue }
             let token = UUID()
             snapshotCaptureTokens[displayUUID] = token

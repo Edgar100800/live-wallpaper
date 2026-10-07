@@ -28,7 +28,14 @@ final class LastFrameStore {
     }
 
     func cache(_ image: NSImage, displayUUID: String, wallpaperID: UUID) {
+        // Keep only the current frame for this display, not every wallpaper
+        // visited during the session. Older persisted frames remain on disk.
+        memory = memory.filter { $0.key.displayUUID != displayUUID }
         memory[Key(displayUUID: displayUUID, wallpaperID: wallpaperID)] = image
+    }
+
+    func removeCachedImages(displayUUID: String) {
+        memory = memory.filter { $0.key.displayUUID != displayUUID }
     }
 
     func cachedImage(displayUUID: String, wallpaperID: UUID) -> NSImage? {

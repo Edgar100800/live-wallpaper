@@ -180,6 +180,7 @@ final class WallpaperControlStoreTests: XCTestCase {
 
     func testAllBundledRendererKindsUseTheNativeMetalPath() {
         XCTAssertEqual(WallpaperRendererKind.nativeMetalCases, [
+            .asciiVideo,
             .metalParticles,
             .metalTwinVortex,
             .metalOrbitalBloom,
@@ -187,7 +188,11 @@ final class WallpaperControlStoreTests: XCTestCase {
             .metalNoiseRain,
             .metalPrimeSpiral,
             .metalTorusOrbit,
-            .metalChromaticRings
+            .metalChromaticRings,
+            .metalSphereTorus,
+            .metalJellyfishPoints,
+            .metalNebula,
+            .metalTorusKnot
         ])
         XCTAssertTrue(WallpaperRendererKind.nativeMetalCases.allSatisfy(\.isNativeMetal))
         XCTAssertFalse(WallpaperRendererKind.web.isNativeMetal)

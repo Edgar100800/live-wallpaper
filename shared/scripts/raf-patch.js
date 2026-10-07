@@ -15,11 +15,15 @@
   window.__pwQualityLevel = 1;
   window.__pwAverageFrameCost = 0;
   window.__pwErrors = [];
+  function recordError(message) {
+    window.__pwErrors.push(String(message).slice(0, 2048));
+    if (window.__pwErrors.length > 100) window.__pwErrors.shift();
+  }
   window.addEventListener('error', function (e) {
-    window.__pwErrors.push(String(e.message || e.error || 'unknown error'));
+    recordError(e.message || e.error || 'unknown error');
   });
   window.addEventListener('unhandledrejection', function (e) {
-    window.__pwErrors.push('unhandled rejection: ' + String(e.reason));
+    recordError('unhandled rejection: ' + String(e.reason));
   });
   var raf = window.requestAnimationFrame.bind(window);
   // Throttle per display frame, not per callback: rAF callbacks within one

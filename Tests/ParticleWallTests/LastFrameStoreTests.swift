@@ -58,6 +58,45 @@ final class LastFrameStoreTests: XCTestCase {
         XCTAssertNil(store.cachedImage(displayUUID: "display-one", wallpaperID: wallpaperID))
     }
 
+    func testSwitchingWallpaperEvictsOnlyThatDisplaysPreviousImage() throws {
+        let firstID = UUID()
+        let otherDisplayID = UUID()
+        let image = makeImage(color: .black)
+        let persisted = try XCTUnwrap(store.persist(image,
+                                                    displayUUID: "display-one",
+                                                    wallpaperID: firstID))
+        store.cache(image, displayUUID: "display-two", wallpaperID: otherDisplayID)
+
+        var previousID = firstID
+        for _ in 0..<20 {
+            let nextID = UUID()
+            store.cache(image, displayUUID: "display-one", wallpaperID: nextID)
+            XCTAssertNil(store.cachedImage(displayUUID: "display-one", wallpaperID: previousID))
+            XCTAssertNotNil(store.cachedImage(displayUUID: "display-one", wallpaperID: nextID))
+            previousID = nextID
+        }
+
+        XCTAssertNotNil(store.cachedImage(displayUUID: "display-two", wallpaperID: otherDisplayID))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: persisted.path))
+        XCTAssertNotNil(store.bestImage(displayUUID: "display-one", wallpaperID: firstID))
+    }
+
+    func testDisconnectingDisplayClearsItsMemoryButKeepsPersistedFrame() throws {
+        let wallpaperID = UUID()
+        let image = makeImage(color: .white)
+        let url = try XCTUnwrap(store.persist(image,
+                                              displayUUID: "display-one",
+                                              wallpaperID: wallpaperID))
+        store.cache(image, displayUUID: "display-two", wallpaperID: wallpaperID)
+
+        store.removeCachedImages(displayUUID: "display-one")
+
+        XCTAssertNil(store.cachedImage(displayUUID: "display-one", wallpaperID: wallpaperID))
+        XCTAssertNotNil(store.cachedImage(displayUUID: "display-two", wallpaperID: wallpaperID))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertNotNil(store.bestImage(displayUUID: "display-one", wallpaperID: wallpaperID))
+    }
+
     func testPersistsRequestedPixelResolutionAndColorProfile() throws {
         let url = try XCTUnwrap(store.persist(makeImage(color: .systemRed),
                                               displayUUID: "retina-display",

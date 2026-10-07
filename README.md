@@ -38,7 +38,8 @@ usando WebKit como ruta de compatibilidad.
     automáticamente, se sirve con import map hacia una copia local de three 0.160 ESM
     (incluye `examples/jsm` de postprocessing: EffectComposer, UnrealBloomPass, etc.)
     y se instancia la clase exportada con `document.body` como container,
-  - carpeta o `.zip` con `index.html` + assets.
+  - carpeta o `.zip` con `index.html` + assets,
+  - `.asciivideo` preprocesado, renderizado nativamente con Metal sin reproducir video.
 - **Aplicar**: click en la tarjeta. Con varios monitores, selector "Aplicar en: …".
 - **Fondos incluidos protegidos**: los wallpapers distribuidos con la app muestran
   un candado y no pueden eliminarse. Si faltan por una versión anterior, se
@@ -112,6 +113,7 @@ Documentación:
 
 - [`PROJECT_PROGRESS.md`](PROJECT_PROGRESS.md): fuente de verdad del estado actual.
 - [`PERFORMANCE_ROADMAP.md`](PERFORMANCE_ROADMAP.md): investigación y próximos pasos.
+- [`ASCII_VIDEO_NATIVE.md`](ASCII_VIDEO_NATIVE.md): formato y renderer nativo ASCII precomputado.
 - [`Animated Wallpaper for Mac.md`](Animated%20Wallpaper%20for%20Mac.md): plan inicial histórico.
 
 ### Sincronización con el wallpaper del sistema

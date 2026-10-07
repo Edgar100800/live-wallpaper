@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "ascii-video",
+  "version": 1,
+  "engine": "ascii-video-v1",
+  "minimumEngineVersion": 1,
+  "model": "precomputed-cells",
+  "capabilities": ["precomputed-frames", "native-renderer"],
+  "resources": ["clip.asciivideo", "fillASCII.png", "edgesASCII.png"],
+  "controls": ["speed"],
+  "defaults": { "speed": 1 }
+}

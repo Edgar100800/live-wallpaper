@@ -18,6 +18,7 @@ final class ThumbnailGenerator {
     // Kept alive for the duration of a job.
     private var window: NSWindow?
     private var webView: WKWebView?
+    private var nativeRenderer: WallpaperRenderer?
     private var navigationDelegate: LocalOnlyNavigationDelegate?
 
     private let size = NSSize(width: 640, height: 400)
@@ -39,6 +40,11 @@ final class ThumbnailGenerator {
         guard !running, !queue.isEmpty else { return }
         running = true
         let job = queue.removeFirst()
+
+        if job.wallpaper.manifest.effectiveRenderer == .asciiVideo {
+            runNativeASCIIThumbnail(job: job)
+            return
+        }
 
         // WebKit suspends requestAnimationFrame in occluded or offscreen windows,
         // so the render window must be on-screen and unoccluded. Near-zero alpha
@@ -90,6 +96,37 @@ final class ThumbnailGenerator {
         }
     }
 
+    private func runNativeASCIIThumbnail(job: Job) {
+        let screenFrame = NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let origin = NSPoint(x: screenFrame.maxX - size.width, y: screenFrame.minY)
+        let window = NSWindow(contentRect: NSRect(origin: origin, size: size),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.level = .floating
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        window.ignoresMouseEvents = true
+        window.hasShadow = false
+        window.alphaValue = 0.02
+
+        guard let renderer = ASCIIWallpaperRenderer(frame: NSRect(origin: .zero, size: size),
+                                                     rootURL: job.wallpaper.folderURL) else {
+            finish(job: job)
+            return
+        }
+        window.contentView?.addSubview(renderer.view)
+        window.orderBack(nil)
+        self.window = window
+        nativeRenderer = renderer
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            renderer.captureSnapshot(targetPixelSize: self.size) { [weak self] image in
+                if let image, let data = Self.pngData(from: image) {
+                    try? data.write(to: job.wallpaper.thumbnailURL)
+                }
+                self?.finish(job: job)
+            }
+        }
+    }
+
     private func snapshot(job: Job) {
         guard let webView else { finish(job: job); return }
         webView.evaluateJavaScript(
@@ -110,6 +147,8 @@ final class ThumbnailGenerator {
     }
 
     private func finish(job: Job) {
+        nativeRenderer?.tearDown()
+        nativeRenderer = nil
         webView?.removeFromSuperview()
         window?.orderOut(nil)
         webView = nil

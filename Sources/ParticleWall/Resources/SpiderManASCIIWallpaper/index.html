@@ -1,0 +1,203 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body, canvas { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+  body { background: #000; }
+  canvas { display: block; image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<canvas id="canvas"></canvas>
+<script>
+(async function () {
+  'use strict';
+
+  const canvas = document.getElementById('canvas');
+  const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, powerPreference: 'low-power' });
+  if (!gl) return;
+
+  function loadBinary(path) {
+    return new Promise(function (resolve, reject) {
+      const request = new XMLHttpRequest();
+      request.open('GET', path, true);
+      request.responseType = 'arraybuffer';
+      request.onload = function () {
+        if (request.status === 0 || (request.status >= 200 && request.status < 300)) {
+          resolve(request.response);
+        } else {
+          reject(new Error('ASCII data load failed: HTTP ' + request.status));
+        }
+      };
+      request.onerror = function () { reject(new Error('ASCII data load failed: ' + path)); };
+      request.send();
+    });
+  }
+
+  const source = await loadBinary('./clip.asciivideo');
+  const view = new DataView(source);
+  const magic = new TextDecoder().decode(new Uint8Array(source, 0, 8));
+  if (magic !== 'PWASCII1' || view.getUint16(8, true) !== 1) return;
+
+  const columns = view.getUint32(24, true);
+  const rows = view.getUint32(28, true);
+  const frameCount = view.getUint32(32, true);
+  const fps = view.getUint32(36, true) / view.getUint32(40, true);
+  const frameBytes = columns * rows * 2;
+  const payloadOffset = 48;
+  if (!columns || !rows || !frameCount || payloadOffset + frameBytes * frameCount !== source.byteLength) return;
+
+  const vertexSource = `#version 300 es
+    const vec2 POS[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+    out vec2 uv;
+    void main() {
+      vec2 position = POS[gl_VertexID];
+      uv = position * 0.5 + 0.5;
+      gl_Position = vec4(position, 0.0, 1.0);
+    }
+  `;
+  const fragmentSource = `#version 300 es
+    precision highp float;
+    precision highp int;
+    uniform highp usampler2D cells;
+    uniform sampler2D fillAtlas;
+    uniform sampler2D edgeAtlas;
+    uniform vec2 gridSize;
+    in vec2 uv;
+    out vec4 color;
+    void main() {
+      vec2 sourceUV = vec2(uv.x, 1.0 - uv.y);
+      vec2 cellPosition = sourceUV * gridSize;
+      ivec2 cellCoord = ivec2(floor(cellPosition));
+      vec2 local = fract(cellPosition);
+      uvec2 cell = texelFetch(cells, cellCoord, 0).rg;
+      uint glyph = cell.r;
+      uint packed = cell.g;
+      vec2 atlasUV;
+      if (glyph < 10u) {
+        atlasUV = (vec2(float(glyph) * 8.0, 0.0) + local * vec2(8.0) + 0.5) / vec2(80.0, 8.0);
+      } else {
+        atlasUV = (vec2(float(glyph - 9u) * 8.0, 0.0) + local * vec2(8.0) + 0.5) / vec2(40.0, 8.0);
+      }
+      float mask = glyph < 10u ? texture(fillAtlas, atlasUV).r : texture(edgeAtlas, atlasUV).r;
+      if (mask < 0.05) discard;
+      vec3 rgb = vec3(
+        float((packed >> 5u) & 7u) / 7.0,
+        float((packed >> 2u) & 7u) / 7.0,
+        float(packed & 3u) / 3.0
+      );
+      color = vec4(rgb, mask);
+    }
+  `;
+
+  function compile(type, sourceText, label) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, sourceText);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      throw new Error(label + ' shader compile failed:\n' + (gl.getShaderInfoLog(shader) || '(empty compiler log)'));
+    }
+    return shader;
+  }
+
+  const program = gl.createProgram();
+  gl.attachShader(program, compile(gl.VERTEX_SHADER, vertexSource, 'vertex'));
+  gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fragmentSource, 'fragment'));
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+  gl.useProgram(program);
+
+  const cells = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, cells);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const initialFrame = new Uint8Array(source, payloadOffset, frameBytes);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG8UI, columns, rows, 0, gl.RG_INTEGER, gl.UNSIGNED_BYTE, initialFrame);
+
+  async function loadAtlas(path, format) {
+    const image = new Image();
+    image.src = path;
+    await image.decode();
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, format, format, gl.UNSIGNED_BYTE, image);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    return texture;
+  }
+
+  const fillAtlas = await loadAtlas('./fillASCII.png', gl.RGBA);
+  const edgeAtlas = await loadAtlas('./edgesASCII.png', gl.RGB);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, cells);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, fillAtlas);
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, edgeAtlas);
+  gl.uniform1i(gl.getUniformLocation(program, 'cells'), 0);
+  gl.uniform1i(gl.getUniformLocation(program, 'fillAtlas'), 1);
+  gl.uniform1i(gl.getUniformLocation(program, 'edgeAtlas'), 2);
+  gl.uniform2f(gl.getUniformLocation(program, 'gridSize'), columns, rows);
+
+  function resize() {
+    const ratio = Math.min(window.devicePixelRatio || 1, 1.5);
+    const width = Math.max(1, Math.floor(innerWidth * ratio));
+    const height = Math.max(1, Math.floor(innerHeight * ratio));
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+      gl.viewport(0, 0, width, height);
+    }
+  }
+  addEventListener('resize', resize);
+  resize();
+
+  let currentFrame = 0;
+  let elapsed = 0;
+  let lastTime = performance.now();
+  function draw(timestamp) {
+    requestAnimationFrame(draw);
+    if (window.__pwPaused) {
+      lastTime = timestamp;
+      return;
+    }
+    const delta = Math.min(0.1, Math.max(0, (timestamp - lastTime) / 1000));
+    lastTime = timestamp;
+    elapsed += delta;
+    const frame = Math.floor(elapsed * fps) % frameCount;
+    if (frame !== currentFrame) {
+      currentFrame = frame;
+      const bytes = new Uint8Array(source, payloadOffset + frame * frameBytes, frameBytes);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, cells);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, columns, rows, gl.RG_INTEGER, gl.UNSIGNED_BYTE, bytes);
+    }
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, fillAtlas);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, edgeAtlas);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+  requestAnimationFrame(draw);
+})().catch(function (error) {
+  const message = document.createElement('pre');
+  message.style.cssText = 'position:fixed;inset:0;margin:0;padding:64px 24px 24px;color:#fff;background:#300;font:16px monospace;white-space:pre-wrap;z-index:9';
+  message.textContent = error
+    ? String(error.message || error) + (error.stack ? '\n' + error.stack : '')
+    : 'Unknown error';
+  console.error(message.textContent);
+  document.body.appendChild(message);
+});
+</script>
+</body>
+</html>

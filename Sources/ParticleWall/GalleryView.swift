@@ -163,8 +163,9 @@ struct GalleryView: View {
         panel.allowsMultipleSelection = true
         var types: [UTType] = [.html, .zip, .folder]
         if let js = UTType(filenameExtension: "js") { types.append(js) }
+        if let asciiVideo = UTType(filenameExtension: "asciivideo") { types.append(asciiVideo) }
         panel.allowedContentTypes = types
-        panel.message = "Elige un .html, .zip, carpeta o archivo .js con tu animación"
+        panel.message = "Elige un .html, .zip, carpeta, .js o .asciivideo"
         if panel.runModal() == .OK {
             importURLs(panel.urls)
         }
@@ -215,8 +216,11 @@ struct WallpaperCard: View {
             ZStack {
                 thumbnail
                 if showLivePreview {
-                    WebViewPreview(wallpaper: wallpaper)
-                        .transition(.opacity)
+                    if wallpaper.manifest.effectiveRenderer == .asciiVideo {
+                        ASCIIViewPreview(wallpaper: wallpaper).transition(.opacity)
+                    } else {
+                        WebViewPreview(wallpaper: wallpaper).transition(.opacity)
+                    }
                 }
                 if hovering && !showLivePreview {
                     previewButton
@@ -368,5 +372,30 @@ struct WebViewPreview: NSViewRepresentable {
 
     final class Coordinator {
         var delegate: LocalOnlyNavigationDelegate?
+    }
+}
+
+struct ASCIIViewPreview: NSViewRepresentable {
+    let wallpaper: Wallpaper
+
+    func makeNSView(context: Context) -> NSView {
+        guard let renderer = ASCIIWallpaperRenderer(frame: .zero, rootURL: wallpaper.folderURL) else {
+            return NSView()
+        }
+        context.coordinator.renderer = renderer
+        return renderer.view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.renderer?.tearDown()
+        coordinator.renderer = nil
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator {
+        var renderer: ASCIIWallpaperRenderer?
     }
 }

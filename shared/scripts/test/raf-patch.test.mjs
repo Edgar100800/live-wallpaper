@@ -86,6 +86,22 @@ test('installs once and exposes contract globals', () => {
   install(makeEnv()); // second call on fresh context also installs cleanly
 });
 
+test('keeps only the latest 100 errors with bounded message length', () => {
+  const env = makeEnv();
+  install(env);
+  for (let i = 0; i < 150; i++) {
+    env.win.dispatchEvent({ type: 'error', message: 'error ' + i });
+  }
+  assert.equal(env.win.__pwErrors.length, 100);
+  assert.equal(env.win.__pwErrors[0], 'error 50');
+  assert.equal(env.win.__pwErrors[99], 'error 149');
+  env.win.dispatchEvent({ type: 'unhandledrejection', reason: 'x'.repeat(10000) });
+  assert.equal(env.win.__pwErrors.length, 100);
+  assert.equal(env.win.__pwErrors[0], 'error 51');
+  assert.equal(env.win.__pwErrors[99].length, 2048);
+  assert.match(env.win.__pwErrors[99], /^unhandled rejection: /);
+});
+
 test('fps cap 30 halves execution against 60 Hz vsync', () => {
   const env = makeEnv();
   install(env);

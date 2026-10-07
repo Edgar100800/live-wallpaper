@@ -13,6 +13,46 @@ const GRAPH_MAX_CONNECTIONS: u32 = 3;
 /// Flow stepping runs at most 6 fixed steps per frame (Swift encodeFlowUpdates).
 const MAX_FLOW_STEPS_PER_FRAME: usize = 6;
 
+// Presenters switch models without recreating bind groups. Reserve the largest
+// storage requirement even when the initial model does not use the prime list.
+fn create_flow_buffers(device: &wgpu::Device) -> (wgpu::Buffer, wgpu::Buffer) {
+    let particles = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("flow particles / primes"),
+        size: u64::from(PRIME_COUNT.max(FLOW_PARTICLE_COUNT)) * 16,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let history = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("flow history"),
+        size: u64::from(FLOW_PARTICLE_COUNT * FLOW_HISTORY_COUNT) * 16,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    (particles, history)
+}
+
+fn initialize_flow_buffers(
+    queue: &wgpu::Queue,
+    particles: &wgpu::Buffer,
+    history: &wgpu::Buffer,
+    model: u32,
+) {
+    match model {
+        4 => {
+            let zeros = vec![[0.0f32; 4]; (FLOW_PARTICLE_COUNT * FLOW_HISTORY_COUNT) as usize];
+            queue.write_buffer(history, 0, bytemuck::cast_slice(&zeros));
+            let zeros = vec![[0.0f32; 4]; FLOW_PARTICLE_COUNT as usize];
+            queue.write_buffer(particles, 0, bytemuck::cast_slice(&zeros));
+        }
+        5 => {
+            let primes = crate::cpu::generate_primes(crate::cpu::PRIME_LIMIT);
+            let data: Vec<[f32; 4]> = primes.iter().map(|p| [*p, 0.0, 0.0, 0.0]).collect();
+            queue.write_buffer(particles, 0, bytemuck::cast_slice(&data));
+        }
+        _ => {}
+    }
+}
+
 pub struct GpuPresenter {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -361,20 +401,7 @@ impl GpuPresenter {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        // Storage slot doubles as primes (model 5) or flow state (model 4).
-        let particle_slots = if model == 5 { PRIME_COUNT } else { FLOW_PARTICLE_COUNT };
-        let flow_particles = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("flow particles / primes"),
-            size: (particle_slots as u64) * 16,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let flow_history = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("flow history"),
-            size: (FLOW_PARTICLE_COUNT * FLOW_HISTORY_COUNT) as u64 * 16,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let (flow_particles, flow_history) = create_flow_buffers(&device);
         let graph_positions = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("graph positions"),
             size: (GRAPH_NODE_COUNT as u64) * 16,
@@ -388,11 +415,7 @@ impl GpuPresenter {
             mapped_at_creation: false,
         });
 
-        if model == 5 {
-            let primes = crate::cpu::generate_primes(crate::cpu::PRIME_LIMIT);
-            let data: Vec<[f32; 4]> = primes.iter().map(|p| [*p, 0.0, 0.0, 0.0]).collect();
-            queue.write_buffer(&flow_particles, 0, bytemuck::cast_slice(&data));
-        }
+        initialize_flow_buffers(&queue, &flow_particles, &flow_history, model);
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("engine group0 bind"),
@@ -484,21 +507,7 @@ impl GpuPresenter {
         self.model = model;
         self.flow_frame = 0;
         self.flow_step_accumulator = 0.0;
-        match model {
-            4 => {
-                // Fresh flow state.
-                let zeros = vec![[0.0f32; 4]; (FLOW_PARTICLE_COUNT * FLOW_HISTORY_COUNT) as usize];
-                self.queue.write_buffer(&self.flow_history, 0, bytemuck::cast_slice(&zeros));
-                let zeros = vec![[0.0f32; 4]; FLOW_PARTICLE_COUNT as usize];
-                self.queue.write_buffer(&self.flow_particles, 0, bytemuck::cast_slice(&zeros));
-            }
-            5 => {
-                let primes = crate::cpu::generate_primes(crate::cpu::PRIME_LIMIT);
-                let data: Vec<[f32; 4]> = primes.iter().map(|p| [*p, 0.0, 0.0, 0.0]).collect();
-                self.queue.write_buffer(&self.flow_particles, 0, bytemuck::cast_slice(&data));
-            }
-            _ => {}
-        }
+        initialize_flow_buffers(&self.queue, &self.flow_particles, &self.flow_history, model);
     }
 
     pub fn model(&self) -> u32 {
@@ -624,3 +633,28 @@ impl GpuPresenter {
 // SAFETY: the raw Wayland pointers are owned by GTK and outlive the presenter
 // (the daemon keeps the Gtk window alive for the presenter's lifetime).
 unsafe impl Send for WaylandHandles {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_switch_uploads_fit_the_original_buffers() {
+        let instance = wgpu::Instance::default();
+        let adapter = pollster::block_on(instance.request_adapter(
+            &wgpu::RequestAdapterOptions::default(),
+        )).expect("GPU adapter required for the buffer regression test");
+        let (device, queue) = pollster::block_on(adapter.request_device(
+            &wgpu::DeviceDescriptor::default(),
+        )).unwrap();
+        device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let (particles, history) = create_flow_buffers(&device);
+        // Same allocations throughout, including starting in a non-prime model.
+        for model in [9, 5, 4, 5] {
+            initialize_flow_buffers(&queue, &particles, &history, model);
+            queue.submit([]);
+            device.poll(wgpu::PollType::Wait).unwrap();
+        }
+        assert!(pollster::block_on(device.pop_error_scope()).is_none());
+    }
+}

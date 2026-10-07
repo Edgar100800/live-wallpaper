@@ -2,6 +2,7 @@ import Foundation
 
 enum WallpaperRendererKind: String, Codable, CaseIterable {
     case web
+    case asciiVideo = "ascii-video"
     case metalParticles = "metal-particles"
     case metalTwinVortex = "metal-twin-vortex"
     case metalOrbitalBloom = "metal-orbital-bloom"

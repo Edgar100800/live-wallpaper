@@ -11,11 +11,13 @@ pub const MODULE_SPHERE_TORUS: &str = "sphere-torus";
 pub const MODULE_JELLYFISH_POINTS: &str = "jellyfish-points";
 pub const MODULE_NEBULA: &str = "nebula";
 pub const MODULE_TORUS_KNOT: &str = "torus-knot";
+pub const MODULE_ASCII_VIDEO: &str = "ascii-video-v1";
 pub const MODULE_WEB: &str = "web";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RendererKind {
     Web,
+    ASCIIVideo,
     MetalParticles,
     MetalTwinVortex,
     MetalOrbitalBloom,
@@ -34,6 +36,7 @@ impl RendererKind {
     pub fn parse(value: &str) -> Option<Self> {
         Some(match value {
             "web" => Self::Web,
+            "ascii-video" => Self::ASCIIVideo,
             "metal-particles" => Self::MetalParticles,
             "metal-twin-vortex" => Self::MetalTwinVortex,
             "metal-orbital-bloom" => Self::MetalOrbitalBloom,
@@ -53,6 +56,7 @@ impl RendererKind {
     pub fn module_id(self) -> &'static str {
         match self {
             Self::Web => MODULE_WEB,
+            Self::ASCIIVideo => MODULE_ASCII_VIDEO,
             Self::MetalParticles => MODULE_PARAMETRIC_WAVES,
             Self::MetalTwinVortex => "twin-vortex",
             Self::MetalOrbitalBloom => "orbital-bloom",

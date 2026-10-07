@@ -79,6 +79,16 @@ Rama de trabajo: `feature/linux-port`.
       Hyprland y UPower; política determinista (`PlaybackFlags.system_paused`).
 - [x] M5 (parcial): servicio systemd, `install.sh` y entrada de escritorio con
       ícono (modo `--app` abre ajustes o arranca el servicio).
+- [x] Fix de apilamiento en el arranque: el shell de Omarchy (quickshell) mapea
+      su fondo estático en la capa Background unos segundos después del
+      daemon, y las superficies de una misma capa se apilan por orden de
+      mapeo, así que el fondo animado quedaba tapado hasta reiniciar el
+      servicio (el proceso vivo y presentando). Ambas superficies propias
+      (GPU y GTK/web) suben ahora a la capa Bottom: siempre por encima de
+      Background y por debajo de las ventanas y la barra, sin carrera de
+      arranque. Descartado el re-map de superficie: cualquier unmap/re-role
+      de la wl_surface que alimenta un swapchain vivo segfaulta el WSI
+      Wayland de NVIDIA (verificado dos veces con coredump).
 
 ### Verificación en Linux
 
@@ -311,6 +321,9 @@ Compatibilidad y formatos:
 
 - [ ] `VideoRenderer` nativo con AVFoundation.
 - [ ] Importación de `.mp4` y `.mov`.
+- [x] Formato offline `.asciivideo` y conversor de celdas ASCII sin análisis en runtime.
+- [x] Renderer Metal inicial para wallpapers `.asciivideo` importados.
+- [ ] Renderer wgpu compartido para `ascii-video-v1`.
 - [ ] API opt-in de controles para HTML arbitrario.
 - [ ] Controles de lista, vectores agrupados y presets de parámetros no cromáticos.
 - [ ] Conversión declarativa segura de fórmulas conocidas a Metal.

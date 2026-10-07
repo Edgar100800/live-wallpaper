@@ -81,7 +81,8 @@ final class WallpaperWindowController: NSObject {
               rendererKind: WallpaperRendererKind = .web,
               controlValues: [String: Double]? = nil) {
         finishPendingControlRequests(with: [])
-        if currentRendererKind != rendererKind {
+        let asciiSourceChanged = rendererKind == .asciiVideo && currentRootURL != rootURL
+        if currentRendererKind != rendererKind || asciiSourceChanged {
             tearDownRenderer()
         }
         currentWallpaperID = wallpaperID
@@ -317,7 +318,7 @@ final class WallpaperWindowController: NSObject {
         occluded = !window.occlusionState.contains(.visible)
     }
 
-    private var effectivePaused: Bool { globallyPaused || occluded }
+    var effectivePaused: Bool { globallyPaused || occluded }
 
     private var effectiveFPSCap: Int {
         let caps = [fpsCap, manifestFPS].filter { $0 > 0 }
@@ -400,11 +401,37 @@ final class WallpaperWindowController: NSObject {
 
     @discardableResult
     private func makeMetalRendererIfNeeded(kind: WallpaperRendererKind) -> Bool {
-        if let renderer = renderer as? MetalParticleRenderer, renderer.kind == kind {
+        if kind == .asciiVideo,
+           let renderer = renderer as? ASCIIWallpaperRenderer,
+           renderer.kind == kind {
+            renderer.applyControlValues(controlValues)
+            return true
+        }
+        if kind != .asciiVideo,
+           let renderer = renderer as? MetalParticleRenderer,
+           renderer.kind == kind {
             renderer.applyControlValues(controlValues)
             return true
         }
         tearDownRenderer()
+        if kind == .asciiVideo,
+           let rootURL = currentRootURL,
+           let ascii = ASCIIWallpaperRenderer(frame: window.contentView?.bounds ?? .zero,
+                                              rootURL: rootURL) {
+            if let sleepImageView {
+                window.contentView?.addSubview(ascii.view, positioned: .below, relativeTo: sleepImageView)
+            } else {
+                window.contentView?.addSubview(ascii.view)
+            }
+            renderer = ascii
+            ascii.applyControlValues(controlValues)
+            return true
+        }
+        if kind == .asciiVideo {
+            NSLog("ParticleWall: ASCII frame store unavailable; falling back to WebKit")
+            currentRendererKind = .web
+            return false
+        }
         guard let metal = MetalParticleRenderer(frame: window.contentView?.bounds ?? .zero,
                                                 kind: kind) else {
             NSLog("ParticleWall: Metal unavailable; falling back to WebKit")

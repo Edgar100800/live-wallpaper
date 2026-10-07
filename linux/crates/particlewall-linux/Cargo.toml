@@ -13,6 +13,12 @@ name = "pw-layer-spike"
 path = "src/bin/pw_layer_spike.rs"
 required-features = []
 
+[[test]]
+name = "web-lifecycle"
+path = "tests/web_lifecycle.rs"
+harness = false
+required-features = ["web", "gpu"]
+
 [dependencies]
 gtk4 = { version = "0.11", features = ["v4_12"] }
 gdk4-wayland = { version = "0.11", optional = true }

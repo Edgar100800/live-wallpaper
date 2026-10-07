@@ -196,11 +196,14 @@ final class LibraryManager: ObservableObject {
 
     // MARK: - Mutations
 
-    func add(folderWithContents sourceFolder: URL, name: String, source: String) throws -> Wallpaper {
+    func add(folderWithContents sourceFolder: URL,
+             name: String,
+             source: String,
+             renderer: WallpaperRendererKind? = nil) throws -> Wallpaper {
         let id = UUID()
         let folder = wallpapersURL.appendingPathComponent(id.uuidString, isDirectory: true)
         try fm.copyItem(at: sourceFolder, to: folder)
-        let manifest = WallpaperManifest(name: name, source: source)
+        let manifest = WallpaperManifest(name: name, source: source, renderer: renderer)
         try writeManifest(manifest, to: folder)
         let wallpaper = Wallpaper(id: id, manifest: manifest, folderURL: folder)
         loadLibrary()

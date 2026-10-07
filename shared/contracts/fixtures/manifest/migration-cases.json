@@ -23,6 +23,11 @@
       "expectedModule": "web"
     },
     {
+      "name": "ascii video maps to ascii-video-v1",
+      "manifest": { "name": "ASCII", "createdAt": "2025-06-01T10:00:00Z", "source": "ascii-video", "renderer": "ascii-video" },
+      "expectedModule": "ascii-video-v1"
+    },
+    {
       "name": "metal-particles maps to parametric-waves",
       "manifest": { "name": "P", "createdAt": "2025-06-01T10:00:00Z", "source": "bundled", "renderer": "metal-particles" },
       "expectedModule": "parametric-waves"
