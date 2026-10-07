@@ -35,18 +35,57 @@
     });
   }
 
-  const source = await loadBinary('./clip.asciivideo');
-  const view = new DataView(source);
-  const magic = new TextDecoder().decode(new Uint8Array(source, 0, 8));
-  if (magic !== 'PWASCII1' || view.getUint16(8, true) !== 1) return;
-
-  const columns = view.getUint32(24, true);
-  const rows = view.getUint32(28, true);
-  const frameCount = view.getUint32(32, true);
-  const fps = view.getUint32(36, true) / view.getUint32(40, true);
-  const frameBytes = columns * rows * 2;
+  // Imported clips use a bounded cache. Bundled v1 clips remain compatible.
+  let source = null;
+  let columns, rows, frameCount, fps, frameBytes;
   const payloadOffset = 48;
-  if (!columns || !rows || !frameCount || payloadOffset + frameBytes * frameCount !== source.byteLength) return;
+  let stream = null;
+  try { stream = JSON.parse(new TextDecoder().decode(await loadBinary('./stream.json'))); } catch (_) {}
+  if (stream) {
+    ({ columns, rows, frameCount, fps } = stream);
+    if (![columns, rows, frameCount, stream.chunkFrames].every(n => Number.isInteger(n) && n > 0) ||
+        !Number.isFinite(fps) || fps <= 0 || fps > 60 || columns * rows > 524288 || stream.chunkFrames > 60) {
+      throw new Error('Invalid ASCII stream metadata');
+    }
+    frameBytes = columns * rows * 2;
+  } else {
+    source = await loadBinary('./clip.asciivideo');
+    const view = new DataView(source);
+    const magic = new TextDecoder().decode(new Uint8Array(source, 0, 8));
+    if (magic !== 'PWASCII1' || view.getUint16(8, true) !== 1) throw new Error('Invalid ASCII header');
+    columns = view.getUint32(24, true); rows = view.getUint32(28, true);
+    frameCount = view.getUint32(32, true); fps = view.getUint32(36, true) / view.getUint32(40, true);
+    frameBytes = columns * rows * 2;
+    if (!columns || !rows || !frameCount || payloadOffset + frameBytes * frameCount !== source.byteLength) throw new Error('Invalid ASCII payload');
+  }
+  const cache = new Map();
+  const pending = new Map();
+  let wantedChunk = 0;
+  let streamError = null;
+  const chunkCount = stream ? Math.ceil(frameCount / stream.chunkFrames) : 0;
+  function loadChunk(index) {
+    if (cache.has(index)) return Promise.resolve(cache.get(index));
+    if (pending.has(index)) return pending.get(index);
+    const task = loadBinary('./frames/' + index + '.bin').then(bytes => {
+      const expected = Math.min(stream.chunkFrames, frameCount - index * stream.chunkFrames) * frameBytes;
+      if (bytes.byteLength !== expected) throw new Error('Incomplete ASCII chunk');
+      if (index === wantedChunk || index === (wantedChunk + 1) % chunkCount) cache.set(index, bytes);
+      return bytes;
+    }).finally(() => pending.delete(index));
+    pending.set(index, task);
+    return task;
+  }
+  function bytesForFrame(frame) {
+    if (!stream) return new Uint8Array(source, payloadOffset + frame * frameBytes, frameBytes);
+    const index = Math.floor(frame / stream.chunkFrames);
+    wantedChunk = index;
+    const next = (index + 1) % chunkCount;
+    for (const key of cache.keys()) if (key !== index && key !== next) cache.delete(key);
+    for (const key of [index, next]) if (!cache.has(key) && !pending.has(key)) loadChunk(key).catch(error => { streamError = error; });
+    const bytes = cache.get(index);
+    return bytes ? new Uint8Array(bytes, (frame % stream.chunkFrames) * frameBytes, frameBytes) : null;
+  }
+  if (stream) await loadChunk(0);
 
   const vertexSource = `#version 300 es
     const vec2 POS[3] = vec2[3](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
@@ -145,7 +184,7 @@
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  const initialFrame = new Uint8Array(source, payloadOffset, frameBytes);
+  const initialFrame = bytesForFrame(0);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG8UI, columns, rows, 0, gl.RG_INTEGER, gl.UNSIGNED_BYTE, initialFrame);
 
   async function loadAtlas(path, format) {
@@ -231,6 +270,7 @@
   }
   updatePalette();
   function draw(timestamp) {
+    if (streamError) { reportError(streamError); return; }
     requestAnimationFrame(draw);
     if (window.__pwPaused) {
       lastTime = timestamp;
@@ -241,8 +281,9 @@
     elapsed += delta;
     const frame = Math.floor(elapsed * fps) % frameCount;
     if (frame !== currentFrame) {
+      const bytes = bytesForFrame(frame);
+      if (!bytes) { elapsed -= delta; return; }
       currentFrame = frame;
-      const bytes = new Uint8Array(source, payloadOffset + frame * frameBytes, frameBytes);
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, cells);
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, columns, rows, gl.RG_INTEGER, gl.UNSIGNED_BYTE, bytes);
@@ -250,7 +291,8 @@
     renderFrame();
   }
   requestAnimationFrame(draw);
-})().catch(function (error) {
+})().catch(reportError);
+function reportError(error) {
   const message = document.createElement('pre');
   message.style.cssText = 'position:fixed;inset:0;margin:0;padding:64px 24px 24px;color:#fff;background:#300;font:16px monospace;white-space:pre-wrap;z-index:9';
   message.textContent = error
@@ -258,7 +300,7 @@
     : 'Unknown error';
   console.error(message.textContent);
   document.body.appendChild(message);
-});
+}
 </script>
 </body>
 </html>

@@ -11,6 +11,9 @@ command -v cargo >/dev/null 2>&1 || [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo
 echo "==> building (release)"
 cargo build --release --manifest-path "$DIR/Cargo.toml" -p particlewall-linux
 
+cargo build --release --manifest-path "$DIR/../tools/ascii-converter/Cargo.toml"
+cp "$DIR/../tools/ascii-converter/target/release/particlewall-ascii-converter" "$DIR/target/release/"
+
 echo "==> installing systemd unit"
 UNIT_DIR="$HOME/.config/systemd/user"
 mkdir -p "$UNIT_DIR"

@@ -305,7 +305,7 @@ fn convert(
         .arg(filter)
         .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"])
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
         .spawn()
         .map_err(|error| format!("could not execute ffmpeg: {error}"))?;
     let mut stdout = decoder.stdout.take().ok_or("ffmpeg stdout unavailable")?;

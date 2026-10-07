@@ -57,8 +57,31 @@ pub fn bundled() -> Vec<Wallpaper> {
     list
 }
 
+pub fn user_wallpapers_dir() -> PathBuf {
+    let base = std::env::var("XDG_DATA_HOME").ok().filter(|s| !s.is_empty())
+        .map(PathBuf::from).unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())).join(".local/share"));
+    base.join("particlewall/wallpapers")
+}
+
+pub fn all() -> Vec<Wallpaper> {
+    let mut list = bundled();
+    if let Ok(entries) = std::fs::read_dir(user_wallpapers_dir()) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let id = entry.file_name().to_string_lossy().into_owned();
+            if !id.starts_with("youtube-") || !path.join("index.html").is_file() || !path.join("stream.json").is_file() { continue; }
+            let name = std::fs::read_to_string(path.join("metadata.json")).ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+                .and_then(|v| v["title"].as_str().map(|title| format!("{} px · {}", v["options"]["cell_size"].as_u64().unwrap_or(8), title))).unwrap_or_else(|| id.clone());
+            list.push(Wallpaper { id, name, index: path.join("index.html") });
+        }
+    }
+    list.sort_by(|a,b| a.name.cmp(&b.name));
+    list
+}
+
 pub fn find(id_or_name: &str) -> Option<Wallpaper> {
-    let all = bundled();
+    let all = all();
     all.iter()
         .find(|w| w.id == id_or_name || w.name.eq_ignore_ascii_case(id_or_name))
         .cloned()

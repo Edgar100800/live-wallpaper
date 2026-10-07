@@ -99,7 +99,7 @@ impl Tray for ParticleWallTray {
         };
 
         // Wallpaper picker (bundled HTML fallbacks of the eight GPU models).
-        let mut wallpapers: Vec<MenuItem<Self>> = crate::web::library::bundled()
+        let mut wallpapers: Vec<MenuItem<Self>> = crate::web::library::all()
             .into_iter()
             .map(|wp| {
                 let check = if wp.id == current { "[x] " } else { "[ ] " };

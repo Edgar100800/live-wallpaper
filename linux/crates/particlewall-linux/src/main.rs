@@ -31,6 +31,28 @@ mod settings;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
+    #[cfg(feature = "web")]
+    if args.first().map(String::as_str) == Some("--reprocess") {
+        let result = args.get(1).ok_or_else(|| "Falta el ID del fondo".to_string()).and_then(|id| {
+            let size = args.get(2).ok_or("Falta el tamaño de celda (4, 6, 8, 12 o 16)")?.parse().map_err(|_| "Tamaño de celda inválido")?;
+            web::importer::reprocess(id, size, &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)), &|event| println!("{event:?}"))
+        });
+        match result { Ok(id) => println!("Reprocesado: {id}"), Err(error) => { eprintln!("{error}"); std::process::exit(1); } }
+        return;
+    }
+
+    #[cfg(feature = "web")]
+    if args.first().map(String::as_str) == Some("--import-youtube") {
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let result = args.get(1).ok_or_else(|| "Falta la URL".to_string()).and_then(|url| {
+            let video = web::importer::analyze(url, &cancel)?;
+            println!("{} · {} s", video.title, video.duration);
+            web::importer::import(url, &video, &web::importer::Options::default(), &cancel, &|event| println!("{event:?}"))
+        });
+        match result { Ok(id) => println!("Importado: {id}"), Err(error) => { eprintln!("{error}"); std::process::exit(1); } }
+        return;
+    }
+
     if args.first().map(String::as_str) == Some("--app") {
         std::process::exit(app_mode());
     }
@@ -212,7 +234,7 @@ fn cli_command(args: &[String]) -> Option<CliAction> {
             #[cfg(feature = "web")]
             {
                 let mut out = String::new();
-                for wp in web::library::bundled() {
+                for wp in web::library::all() {
                     out.push_str(&format!("{}\t{}\n", wp.id, wp.name));
                 }
                 Some(CliAction::Print(out))

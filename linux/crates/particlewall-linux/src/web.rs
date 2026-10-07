@@ -26,6 +26,12 @@ pub(crate) mod control;
 pub(crate) mod tray;
 #[path = "library.rs"]
 pub(crate) mod library;
+#[path = "reprocess_ui.rs"]
+pub(crate) mod reprocess_ui;
+#[path = "import_ui.rs"]
+pub(crate) mod import_ui;
+#[path = "importer.rs"]
+pub(crate) mod importer;
 #[path = "omarchy_palette.rs"]
 pub(crate) mod omarchy_palette;
 #[cfg(feature = "gpu")]
@@ -119,7 +125,7 @@ fn install_navigation_policy(webview: &WebView, root: &std::path::Path) {
                 "file" => particlewall_contracts::paths::is_within_root(
                     &root,
                     std::path::Path::new(u.path().as_str()),
-                ),
+                ) || particlewall_contracts::paths::is_within_root(&library::user_wallpapers_dir(), std::path::Path::new(u.path().as_str())),
                 _ => false,
             })
             .unwrap_or(false);
@@ -446,7 +452,7 @@ fn spawn_web_child(
             state.borrow().flags.fps_cap.load(std::sync::atomic::Ordering::Relaxed),
             &state.borrow().ascii_settings(wallpaper_id),
         );
-        webview.load_uri(&format!("file://{}", wp.index.display()));
+        webview.load_uri(&gtk4::gio::File::for_path(&wp.index).uri());
         return;
     }
 
@@ -484,7 +490,7 @@ fn spawn_web_child(
     }
 
     install_navigation_policy(&webview, &resources_root);
-    webview.load_uri(&format!("file://{}", wp.index.display()));
+    webview.load_uri(&gtk4::gio::File::for_path(&wp.index).uri());
 
     window.set_child(Some(&webview));
     state.borrow_mut().webviews.push((id.to_string(), webview));

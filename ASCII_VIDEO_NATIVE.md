@@ -160,7 +160,7 @@ Required checks:
 
 ## Unified Linux settings
 
-The resizable GTK editor starts at 900x650 (tiling compositors may allocate a
+The resizable GTK editor starts at 900x760 (tiling compositors may allocate a
 smaller or larger area). It exposes wallpaper selection, pause, FPS, ASCII color
 mode, independent background cleanup and separation strength, particle appearance
 and saved color profiles. Inapplicable controls are disabled for ASCII wallpapers.
@@ -181,3 +181,88 @@ repaint a paused frame without decoding or reloading the clip.
 GUI regression: `PARTICLEWALL_GUI_TEST=1 cargo test --manifest-path linux/Cargo.toml
 -p particlewall-linux --test web-lifecycle`. This checks one-window reuse, preview,
 explicit save, cancellation and independent ASCII controls on GTK's main thread.
+
+## YouTube import on Linux
+
+The **Importar video** settings tab includes **Agregar video de YouTube**: analyze a single HTTPS URL, choose
+480/720/1080p, 15/30 FPS and 4/6/8/12/16px cells, select a start/end interval, then convert. Imports run
+on a worker thread while the current wallpaper continues playing. Closing the
+settings window or cancelling kills the active subprocess group and removes the
+staging directory. A completed import is added to the picker as a preview;
+**Guardar cambios** makes it the persisted wallpaper.
+
+Requirements: `yt-dlp`, `ffmpeg`, `ffprobe`, and `particlewall-ascii-converter`
+beside the daemon executable. `linux/install.sh` builds and places the converter.
+YouTube errors are surfaced in the import panel; no browser credentials are read.
+
+Limits: individual completed videos, no audio, a maximum 300-second selected
+interval, at most 512 MiB estimated ASCII output, and at most 512 MiB source
+video. The importer checks available disk space before downloading. Download,
+normalization and conversion have bounded timeouts. Progress describes stages,
+not a measured percentage of downloaded bytes.
+
+Completed imports live in `$XDG_DATA_HOME/particlewall/wallpapers` (default
+`~/.local/share/particlewall/wallpapers`). Hidden staging directories never enter
+the library. Existing built-in wallpapers and configuration remain compatible.
+
+Imported clips contain `metadata.json`, `thumbnail.png`, `index.html`, the two
+atlases, `stream.json` and `frames/N.bin`. The converter first writes v1 data;
+the importer validates and splits it into 60-frame blocks, then removes the full
+copy. The downloaded source is retained in the shared source cache. The player caches the current and following blocks,
+pausing advancement if a block is not yet available. At 720p, 30 FPS and 8px
+cells, typical 16:9 cache payload is about 3.5 MB rather than growing with video
+length. Legacy bundled `.asciivideo` files retain their original loading path.
+
+For command-line import (does not change the active wallpaper):
+
+```sh
+linux/target/release/particlewall --import-youtube 'https://www.youtube.com/watch?v=gU4vSEZwiyE'
+```
+
+The CLI uses default 720p/30 FPS and the full video, so videos over 300 seconds
+must be imported through settings with an explicit interval.
+
+Validated on this Omarchy PC with `gU4vSEZwiyE`: real metadata lookup from GTK,
+download and conversion to 160x90 cells, 627 frames at 30 FPS, original/Omarchy
+color modes and pause (zero changed wallpaper pixels). Eight daemon/WebKit
+processes remained present during a 50-second sample; aggregate PSS was
+542.8–547.7 MiB. This includes WebKit and GPU resources and is a short playback
+check, not proof against long-term leaks. Unit checks cover URL rejection,
+interval/storage limits, final partial chunks and subprocess cancellation.
+
+
+## Density and reprocessing on Linux
+
+Settings groups controls into **Fondo**, **Video ASCII**, **Importar video**, and
+**Partículas** tabs, with preview/save/cancel in a shared footer. **Video ASCII**
+contains live appearance on the left and density conversion on the right.
+Density uses the converter cell size: 4px (very high), 6px (high), 8px (medium,
+legacy default), 12px (low), or 16px (very low). Changing this selector alone does
+not alter the playing file: click **Reprocesar video** to create a new variant,
+then save settings to persist its selection. The previous variant remains usable.
+
+A shared source cache lives beside the wallpaper library, at
+`$XDG_DATA_HOME/particlewall/sources/<youtube-id>-<height>.video`. New successful
+imports retain the downloaded video here. Density variants share that source;
+normalization remains temporary. Reprocessing keeps the same resolution, FPS and
+start/end interval. If a previous density variant exists, it is selected without
+repeating conversion. The picker lists imported variants with their cell size.
+
+Older imports stored only video metadata and deleted their source. Their original
+conversion settings are inferred from the existing stable ID, keeping 8px IDs
+compatible. The UI explicitly offers **Recuperar original y reprocesar** when the
+source is absent. This downloads it once; later density changes use the local
+cache. Bundled ASCII clips have no original-video metadata and cannot be
+reprocessed through this feature.
+
+New `metadata.json` files retain title/ID/duration plus `options` (height, FPS,
+start/end, `cell_size`). Variants use a `-c<N>` suffix except legacy 8px. Work is
+staged and published by directory rename; cancellation never changes the playing
+variant or removes a previously cached source. Disk estimates and the 512 MiB
+ASCII output limit scale with density.
+
+CLI: `particlewall --reprocess <wallpaper-id> <cell-size>` creates or reuses a
+variant without switching the active wallpaper. Validation on this PC recovered
+Gargantua's original for 4px (320x180 cells), then generated 16px (80x45 cells)
+while a deliberately failing `yt-dlp` executable was on PATH: the download tool
+was never invoked. Both conversions retain the 627-frame, 30 FPS sequence.
