@@ -20,6 +20,7 @@ pub fn resources_dir() -> PathBuf {
 
 fn pretty_name(folder: &str) -> String {
     match folder {
+        "SpiderManASCIIWallpaper" => "Spider-Man ASCII",
         "DefaultWallpaper" => "Ondas Paramétricas",
         "TwinVortexWallpaper" => "Vórtice Gemelo",
         "OrbitalBloomWallpaper" => "Flor Orbital",
@@ -79,6 +80,14 @@ pub struct ColorSettings {
     pub brightness: Option<f64>,
 }
 
+impl ColorSettings {
+    pub fn resolved(&self) -> Self {
+        Self { background: Some(self.background.unwrap_or(198153)),
+            particle: Some(self.particle.unwrap_or(15269887)),
+            size: Some(self.size.unwrap_or(1.6)), brightness: Some(self.brightness.unwrap_or(1.5)) }
+    }
+}
+
 /// A saved background+particle pair, mirroring macOS color profiles.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Profile {
@@ -89,7 +98,38 @@ pub struct Profile {
     pub particle: u32,
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ASCIIColorMode {
+    Original,
+    #[default]
+    Omarchy,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ASCIISettings {
+    pub color_mode: ASCIIColorMode,
+    pub clean_background: bool,
+    pub separation: f64,
+}
+
+impl Default for ASCIISettings {
+    fn default() -> Self {
+        Self { color_mode: ASCIIColorMode::Omarchy, clean_background: true, separation: 0.5 }
+    }
+}
+
+impl ASCIISettings {
+    pub fn script(&self) -> String {
+        format!("window.__pwASCIISettings = {}; window.dispatchEvent(new Event('pw-ascii-settings'));",
+            serde_json::to_string(self).unwrap())
+    }
+}
+
+fn default_fps() -> u32 { 30 }
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wallpaper: Option<String>,
@@ -97,6 +137,17 @@ pub struct Config {
     pub colors: ColorSettings,
     #[serde(default)]
     pub profiles: Vec<Profile>,
+    #[serde(default = "default_fps", rename = "fpsCap")]
+    pub fps_cap: u32,
+    #[serde(default, rename = "asciiSettings")]
+    pub ascii: std::collections::BTreeMap<String, ASCIISettings>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self { wallpaper: None, colors: ColorSettings::default(), profiles: Vec::new(),
+               fps_cap: default_fps(), ascii: Default::default() }
+    }
 }
 
 pub fn config_path() -> PathBuf {
@@ -115,13 +166,14 @@ pub fn load_config() -> Config {
         .unwrap_or_default()
 }
 
-pub fn save_config(config: &Config) {
-    if let Some(parent) = config_path().parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(body) = serde_json::to_string_pretty(config) {
-        let _ = std::fs::write(config_path(), format!("{body}\n"));
-    }
+pub fn save_config(config: &Config) -> std::io::Result<()> {
+    let path = config_path();
+    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
+    let body = serde_json::to_string_pretty(config)?;
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, format!("{body}\n"))?;
+    std::fs::rename(temporary, path)
+
 }
 
 /// Backwards-compatible helper used at startup.
@@ -133,5 +185,29 @@ pub fn load_selected() -> Option<String> {
 pub fn save_selected(id: &str) {
     let mut cfg = load_config();
     cfg.wallpaper = Some(id.into());
-    save_config(&cfg);
+    let _ = save_config(&cfg);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn old_configuration_gets_compatible_defaults() {
+        let cfg: Config = serde_json::from_str(r#"{"wallpaper":"SpiderManASCIIWallpaper","colors":{},"profiles":[]}"#).unwrap();
+        assert_eq!(cfg.fps_cap, 30);
+        assert!(cfg.ascii.is_empty());
+        assert_eq!(ASCIISettings::default().color_mode, ASCIIColorMode::Omarchy);
+    }
+    #[test]
+    fn ascii_modes_and_independent_cleanup_round_trip_per_wallpaper() {
+        let mut cfg = Config::default();
+        cfg.fps_cap = 15;
+        cfg.ascii.insert("SpiderManASCIIWallpaper".into(), ASCIISettings {
+            color_mode: ASCIIColorMode::Original, clean_background: true, separation: 0.8 });
+        cfg.ascii.insert("OtherASCII".into(), ASCIISettings {
+            color_mode: ASCIIColorMode::Omarchy, clean_background: false, separation: 0.1 });
+        let encoded = serde_json::to_string(&cfg).unwrap();
+        assert_eq!(serde_json::from_str::<Config>(&encoded).unwrap(), cfg);
+        assert!(encoded.contains("original"));
+    }
 }

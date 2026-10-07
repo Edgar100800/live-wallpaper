@@ -36,6 +36,7 @@ pub enum Command {
     ApplyProfile(String),
     /// Open (or raise) the GTK settings window.
     OpenSettings,
+    Configure(library::Config, bool),
     Status,
     Quit,
 }
@@ -56,6 +57,10 @@ impl Command {
             "profile-delete" => Some(Self::DeleteProfile(v.get("name")?.as_str()?.into())),
             "profile-apply" => Some(Self::ApplyProfile(v.get("name")?.as_str()?.into())),
             "open-settings" => Some(Self::OpenSettings),
+            "configure" => Some(Self::Configure(
+                serde_json::from_value(v.get("settings").cloned()?).ok()?,
+                v.get("save").and_then(|v| v.as_bool()).unwrap_or(false),
+            )),
             "status" => Some(Self::Status),
             "quit" => Some(Self::Quit),
             _ => None,
@@ -100,6 +105,7 @@ pub struct DaemonState {
     pub colors: library::ColorSettings,
     /// Saved color profiles (persisted in config.json).
     pub profiles: Vec<library::Profile>,
+    pub ascii: std::collections::BTreeMap<String, library::ASCIISettings>,
     /// Shared with the tray so its menu can mark the active wallpaper.
     pub current: Option<Arc<std::sync::Mutex<String>>>,
     /// Shared with the tray: saved profile names for its submenu.
@@ -122,7 +128,7 @@ pub struct DaemonState {
     /// Opens (or raises) the settings window with the given initial values;
     /// set by the host on the GTK main loop. Values are passed as arguments
     /// because the applier invokes it under an active state borrow.
-    pub open_settings: Option<std::rc::Rc<dyn Fn(f64, f64)>>,
+    pub open_settings: Option<std::rc::Rc<dyn Fn(crate::settings::Snapshot)>>,
 }
 
 /// Wire ranges: "Tamaño" extends the macOS descriptor (0.5-4) to 0.25-8 —
@@ -154,7 +160,7 @@ impl DaemonState {
     /// JS snippet applying the current appearance through the shared
     /// wallpaper contract. None when nothing is set.
     pub fn colors_js(&self) -> Option<String> {
-        let parts = appearance_js_parts(&self.colors);
+        let parts = appearance_js_parts(&self.colors.resolved());
         if parts.is_empty() {
             return None;
         }
@@ -170,7 +176,7 @@ impl DaemonState {
         if let Some(hook) = &self.on_colors {
             hook(&self.colors);
         }
-        let parts = appearance_js_parts(&self.colors);
+        let parts = appearance_js_parts(&self.colors.resolved());
         if parts.is_empty() {
             return;
         }
@@ -200,17 +206,24 @@ impl DaemonState {
             "wallpaper": self.wallpaper,
             "colors": self.colors,
             "profiles": self.profiles,
+            "asciiSettings": self.ascii,
         });
         format!("{body}\n")
     }
 
-    fn persist(&self) {
-        library::save_config(&library::Config {
-            wallpaper: Some(self.wallpaper.clone()),
-            colors: self.colors.clone(),
-            profiles: self.profiles.clone(),
-        });
+    pub fn config(&self) -> library::Config {
+        library::Config {
+            wallpaper: Some(self.wallpaper.clone()), colors: self.colors.clone(),
+            profiles: self.profiles.clone(), ascii: self.ascii.clone(),
+            fps_cap: self.flags.fps_cap.load(Ordering::Relaxed),
+        }
     }
+
+    pub fn ascii_settings(&self, id: &str) -> library::ASCIISettings {
+        self.ascii.get(id).cloned().unwrap_or_default()
+    }
+
+    fn persist(&self) -> std::io::Result<()> { library::save_config(&self.config()) }
 
     fn set_paused(&mut self, paused: bool) -> String {
         self.flags.paused.store(paused, Ordering::Relaxed);
@@ -245,11 +258,13 @@ impl DaemonState {
             }
             Command::Fps(fps) => {
                 self.set_fps(*fps);
+                let _ = self.persist();
                 "ok\n".into()
             }
             // Routed to apply_wallpaper by the applier loop: the renderer
             // switch hook re-borrows the shared state, so it can never run
             // under this borrow_mut.
+            Command::Configure(_, _) => "{\"error\":\"internal: configure misrouted\"}\n".into(),
             Command::Apply(_) => "{\"error\":\"internal: apply misrouted\"}\n".into(),
             Command::SetColors(new_colors) => {
                 let before = self.colors.clone();
@@ -269,7 +284,7 @@ impl DaemonState {
                 // config.json is not rewritten for every tick.
                 if self.colors != before {
                     self.push_colors();
-                    self.persist();
+                    let _ = self.persist();
                 }
                 format!("{{\"colors\":{}}}\n", serde_json::to_string(&self.colors).unwrap())
             }
@@ -285,14 +300,14 @@ impl DaemonState {
                     list.retain(|n| *n != *name);
                     list.insert(0, name.clone());
                 }
-                self.persist();
+                let _ = self.persist();
                 format!("{{\"saved\":\"{name}\"}}\n")
             }
             Command::DeleteProfile(name) => {
                 let before = self.profiles.len();
                 self.profiles.retain(|p| p.name != *name);
                 if let Some(ui) = &self.profiles_ui { ui.lock().unwrap().retain(|n| *n != *name); }
-                self.persist();
+                let _ = self.persist();
                 format!("{{\"deleted\":{}}}\n", before != self.profiles.len())
             }
             Command::ApplyProfile(name) => {
@@ -308,17 +323,12 @@ impl DaemonState {
             }
             Command::OpenSettings => match &self.open_settings {
                 Some(open) => {
-                    let size = self
-                        .colors
-                        .size
-                        .unwrap_or(1.6)
-                        .clamp(PARTICLE_SIZE_RANGE.0, PARTICLE_SIZE_RANGE.1);
-                    let brightness = self
-                        .colors
-                        .brightness
-                        .unwrap_or(1.5)
-                        .clamp(BRIGHTNESS_RANGE.0, BRIGHTNESS_RANGE.1);
-                    open(size, brightness);
+                    open(crate::settings::Snapshot {
+                        config: self.config(),
+                        paused: self.flags.paused.load(Ordering::Relaxed),
+                        system_paused: self.flags.system_paused.load(Ordering::Relaxed),
+                        outputs: self.windows.len(),
+                    });
                     "ok\n".into()
                 }
                 None => "{\"error\":\"settings window unavailable\"}\n".into(),
@@ -357,6 +367,10 @@ fn web_fallback(state: &SharedState, wp: &library::Wallpaper) -> String {
 /// borrow of `state`: the renderer switch hook borrows it again while
 /// rebuilding the window children (spawn_web_child).
 fn apply_wallpaper(state: &SharedState, id: &str) -> String {
+    apply_wallpaper_inner(state, id, true)
+}
+
+fn apply_wallpaper_inner(state: &SharedState, id: &str, save: bool) -> String {
     let Some(wp) = library::find(id) else {
         return format!("{{\"error\":\"unknown wallpaper '{id}'\"}}\n");
     };
@@ -378,11 +392,46 @@ fn apply_wallpaper(state: &SharedState, id: &str) -> String {
     if let Some(current) = &st.current {
         *current.lock().unwrap() = wp.id.clone();
     }
-    st.persist();
+    if save { let _ = st.persist(); }
     if let Some(handle) = &st.tray {
         handle.update(|_| {});
     }
     reply
+}
+
+fn configure(state: &SharedState, cfg: &library::Config, save: bool) -> String {
+    let id = cfg.wallpaper.as_deref().unwrap_or("DefaultWallpaper");
+    if library::find(id).is_none() || cfg.fps_cap > 240
+        || cfg.colors.size.is_some_and(|v| !v.is_finite() || !(0.25..=8.0).contains(&v))
+        || cfg.colors.brightness.is_some_and(|v| !v.is_finite() || !(0.25..=10.0).contains(&v))
+        || cfg.ascii.values().any(|v| !v.separation.is_finite() || !(0.0..=1.0).contains(&v.separation)) {
+        return "{\"error\":\"Configuración inválida\"}\n".into();
+    }
+    if save {
+        if let Err(error) = library::save_config(cfg) {
+            return format!("{}\n", serde_json::json!({"error": format!("No se pudo guardar: {error}")}));
+        }
+    }
+    let changed_wallpaper = state.borrow().wallpaper != id;
+    {
+        let mut st = state.borrow_mut();
+        st.colors = cfg.colors.clone();
+        st.profiles = cfg.profiles.clone();
+        st.ascii = cfg.ascii.clone();
+        if let Some(ui) = &st.profiles_ui {
+            *ui.lock().unwrap() = st.profiles.iter().map(|p| p.name.clone()).collect();
+        }
+        st.push_colors();
+        st.set_fps(cfg.fps_cap);
+        if !changed_wallpaper {
+            let js = st.ascii_settings(id).script();
+            for (_, wv) in &st.webviews {
+                wv.evaluate_javascript(&js, None, None, None::<&gtk4::gio::Cancellable>, |_| {});
+            }
+        }
+    }
+    if changed_wallpaper { apply_wallpaper_inner(state, id, false); }
+    "ok\n".into()
 }
 
 /// Starts the applier task on the GTK main thread plus the socket listener
@@ -411,6 +460,11 @@ pub fn start(
             // the shared state internally; it must run with no active borrow.
             let reply = match &cmd {
                 Command::Apply(id) => apply_wallpaper(&state, id),
+                Command::Configure(cfg, save) => {
+                    let reply = configure(&state, cfg, *save);
+                    if stream.is_none() { crate::settings::configuration_result(&reply, *save); }
+                    reply
+                },
                 _ => {
                     let mut st = state.borrow_mut();
                     let reply = st.apply(&cmd);

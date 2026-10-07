@@ -153,3 +153,14 @@ Evidencias temporales:
 - `/tmp/particlewall-live-visual-results.json`: comparación de capturas de animación/pausa.
 - `/tmp/particlewall-open-validation.png`, `/tmp/particlewall-gpu-active-a.png`, `/tmp/particlewall-web-active-a.png`: capturas inspeccionadas.
 - Journal del servicio desde las 09:10:38; error de Lluvia a las 09:13:08. Después de volver a otros fondos no aparecieron nuevos errores de validación durante los ciclos probados.
+
+
+### Ajustes unificados (2026-10-07)
+
+El bucle GPU ahora programa cada tick usando el límite FPS configurado; dejó de
+leer y descartar ese valor. El modo automático conserva la cadencia anterior de
+aproximadamente 60 Hz. El límite y las preferencias ASCII se guardan en la
+configuración. El contador de salidas web también usa los monitores disponibles.
+Estas correcciones sustituyen los pendientes de FPS y `outputs: 0` descritos en
+la validación anterior. Lluvia de Ruido y la inyección de fallos Wayland siguen
+pendientes.

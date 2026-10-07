@@ -114,6 +114,33 @@ Manifest renderer value is `ascii-video`. Existing manifest v1 remains readable.
 
 Assets originate from AcerolaFX, which is MIT licensed. Keep the AcerolaFX copyright and license notice when redistributing those assets.
 
+## Omarchy palette and visual separation (Linux HTML fallback)
+
+The bundled SpiderMan ASCII wallpaper uses WebKitGTK on Linux. The daemon reads
+`$XDG_STATE_HOME/omarchy/current/theme/colors.toml` (default
+`~/.local/state/omarchy/current/theme/colors.toml`), with the older config-directory
+location as fallback. It injects `window.__pwSystemPalette`: `background`, `ink`
+and `highlight`, each an RGB triplet in `0..1`. Ink prefers `cyan`, then `accent`,
+then `foreground`; highlights prefer `bright_cyan`, then `foreground`.
+
+The daemon checks for palette changes every two seconds and sends
+`pw-system-palette` only when colors change. The wallpaper repaints even when
+paused, preserving its current frame. No desktop theme files or saved manual
+ParticleWall colors are changed. Without a valid system palette, original RGB332
+rendering remains available, including on macOS.
+
+This clip has no depth or segmentation channel. Its bright sky is suppressed with
+`1 - smoothstep(cutoff - 0.30, cutoff, luminance)`, where the separation slider
+sets `cutoff` between `0.78` and `0.38` (default `0.58`); local four-neighbor contrast attenuates
+flat regions. Removed glyphs become the solid theme background. Dark buildings
+can still remain, and bright parts of the subject can be attenuated: this is a
+clip-specific visual approximation, not physical depth detection.
+
+For accurate separation on other clips, generate a temporally stable subject
+mask or depth map from the original video during conversion, store one mask value
+per cell per frame in a versioned format or sidecar, then use that value to gate
+glyph visibility. Keep inference offline so wallpaper playback stays inexpensive.
+
 ## Resource policy
 
 Import cost is acceptable because it happens once. Runtime must not invoke ffmpeg, AVFoundation decode or full-resolution image analysis. Renderer may cache current and next frame only; loading all frames into memory is unnecessary.
@@ -130,3 +157,27 @@ Required checks:
 4. Pause freezes current frame and uses zero analysis work.
 5. Deep sleep tears down native view while preserving last-frame snapshot.
 6. Same `.asciivideo` cell sequence renders on Metal and wgpu within documented color tolerance.
+
+## Unified Linux settings
+
+The resizable GTK editor starts at 900x650 (tiling compositors may allocate a
+smaller or larger area). It exposes wallpaper selection, pause, FPS, ASCII color
+mode, independent background cleanup and separation strength, particle appearance
+and saved color profiles. Inapplicable controls are disabled for ASCII wallpapers.
+
+Changes send `configure` commands with `save: false` for live preview. Only
+**Guardar cambios** writes the full configuration, using a temporary file and an
+atomic rename; write failures appear in the editor. **Cancelar** or closing the
+window restores the last saved preview baseline. **Restaurar valores** previews
+default appearance, 30 FPS and the active wallpaper's default ASCII settings;
+other wallpaper settings and saved profiles remain intact.
+
+`config.json` adds `fpsCap` and `asciiSettings`, a map keyed by wallpaper ID.
+Each ASCII entry stores `colorMode` (`original` or `omarchy`), `cleanBackground`
+and `separation` (`0..1`). Older configurations default to 30 FPS and the existing
+Omarchy treatment. The color mode and cleanup are independent. Runtime changes
+repaint a paused frame without decoding or reloading the clip.
+
+GUI regression: `PARTICLEWALL_GUI_TEST=1 cargo test --manifest-path linux/Cargo.toml
+-p particlewall-linux --test web-lifecycle`. This checks one-window reuse, preview,
+explicit save, cancellation and independent ASCII controls on GTK's main thread.

@@ -26,6 +26,8 @@ pub(crate) mod control;
 pub(crate) mod tray;
 #[path = "library.rs"]
 pub(crate) mod library;
+#[path = "omarchy_palette.rs"]
+pub(crate) mod omarchy_palette;
 #[cfg(feature = "gpu")]
 #[path = "wayland.rs"]
 pub(crate) mod wayland;
@@ -71,16 +73,19 @@ fn user_scripts(paused: bool, fps_cap: u32) -> Vec<String> {
     let harden = shared_script("harden.js");
     let playback = format!("window.__pwPaused = {paused}; window.__pwFPSCap = {fps_cap};");
 
-    vec![dpr, raf, playback, harden]
+    let palette = omarchy_palette::script(omarchy_palette::read().as_ref());
+    vec![dpr, raf, playback, palette, harden]
 }
 
-fn attach_scripts(webview: &WebView, paused: bool, fps_cap: u32) {
+fn attach_scripts(webview: &WebView, paused: bool, fps_cap: u32, ascii: &library::ASCIISettings) {
     let all = UserContentInjectedFrames::AllFrames;
     let start = UserScriptInjectionTime::Start;
     let scripts = user_scripts(paused, fps_cap);
     let ucm = webview
         .user_content_manager()
         .expect("WebView always has a UserContentManager");
+
+    ucm.add_script(&UserScript::new(&ascii.script(), all, start, &[], &[]));
 
     // All except harden.js run at document-start.
     for (i, source) in scripts.iter().enumerate() {
@@ -174,6 +179,7 @@ mod gpu {
 
     impl GpuRuntime {
         pub fn apply_config(&mut self, colors: &library::ColorSettings) {
+            let colors = colors.resolved();
             if let Some(bg) = colors.background {
                 let c = packed_to_rgba01(bg);
                 self.background = [c[0] as f64, c[1] as f64, c[2] as f64, 1.0];
@@ -183,7 +189,7 @@ mod gpu {
             }
             if let Some(s) = colors.size {
                 self.particle_size =
-                    (s as f32).clamp(0.5, 4.0);
+                    (s as f32).clamp(0.25, 8.0);
             }
             if let Some(w) = colors.brightness {
                 self.brightness = (w as f32).clamp(0.25, 10.0);
@@ -438,6 +444,7 @@ fn spawn_web_child(
             &webview,
             state.borrow().flags.effective_paused(),
             state.borrow().flags.fps_cap.load(std::sync::atomic::Ordering::Relaxed),
+            &state.borrow().ascii_settings(wallpaper_id),
         );
         webview.load_uri(&format!("file://{}", wp.index.display()));
         return;
@@ -452,6 +459,7 @@ fn spawn_web_child(
         &webview,
         state.borrow().flags.effective_paused(),
         state.borrow().flags.fps_cap.load(std::sync::atomic::Ordering::Relaxed),
+        &state.borrow().ascii_settings(wallpaper_id),
     );
     webview.set_background_color(&gtk_gdk::RGBA::BLACK);
 
@@ -487,22 +495,22 @@ fn start_gpu_loop(
     state: Rc<RefCell<control::DaemonState>>,
     gpu_rt: Rc<RefCell<gpu::GpuRuntime>>,
 ) {
-    glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
+    fn schedule(state: Rc<RefCell<control::DaemonState>>, gpu_rt: Rc<RefCell<gpu::GpuRuntime>>) {
         let fps = state.borrow().flags.fps_cap.load(std::sync::atomic::Ordering::Relaxed);
-        let paused = state.borrow().flags.effective_paused();
-        // Skip work when paused; re-check interval needs are handled by the
-        // 16ms cadence (cheap when idle: no GPU submission).
-        let _ = fps;
-        gpu_rt.borrow_mut().tick(paused);
-        let still_gpu = !gpu_rt.borrow().outputs.is_empty();
-        if still_gpu {
-            glib::ControlFlow::Continue
-        } else {
-            let mut rt = gpu_rt.borrow_mut();
-            rt.loop_running = false;
-            glib::ControlFlow::Break
-        }
-    });
+        // Unlimited uses the existing ~60 Hz cadence. Configured caps schedule
+        // submissions directly instead of waking at 16 ms and ignoring the cap.
+        let interval = std::time::Duration::from_secs_f64(1.0 / if fps == 0 { 60.0 } else { fps as f64 });
+        glib::timeout_add_local_once(interval, move || {
+            let paused = state.borrow().flags.effective_paused();
+            gpu_rt.borrow_mut().tick(paused);
+            if gpu_rt.borrow().outputs.is_empty() {
+                gpu_rt.borrow_mut().loop_running = false;
+            } else {
+                schedule(state, gpu_rt);
+            }
+        });
+    }
+    schedule(state, gpu_rt);
 }
 
 pub fn run() {
@@ -516,6 +524,7 @@ pub fn run() {
 
         // Initial state: persisted configuration or sensible defaults.
         let cfg = library::load_config();
+        flags.fps_cap.store(cfg.fps_cap.min(240), std::sync::atomic::Ordering::Relaxed);
         let initial = cfg
             .wallpaper
             .clone()
@@ -536,6 +545,7 @@ pub fn run() {
             wallpaper: initial_wp.id.clone(),
             colors: cfg.colors.clone(),
             profiles: cfg.profiles.clone(),
+            ascii: cfg.ascii.clone(),
             current: Some(current_id.clone()),
             profiles_ui: Some(profiles_ui.clone()),
             appearance_ui: Some(appearance_ui.clone()),
@@ -587,8 +597,10 @@ pub fn run() {
         #[cfg(feature = "gpu")]
         {
             let rt = gpu_rt.clone();
+            let output_count = layer::monitors().len();
             state.borrow_mut().output_count = Some(Rc::new(move || {
-                rt.borrow().outputs.len()
+                let rt = rt.borrow();
+                if rt.outputs.is_empty() { output_count } else { rt.outputs.len() }
             }));
         }
 
@@ -599,8 +611,8 @@ pub fn run() {
         // arguments: the applier runs it under an active state borrow.
         {
             let tx_settings = tx.clone();
-            state.borrow_mut().open_settings = Some(Rc::new(move |size, brightness| {
-                crate::settings::open(size, brightness, tx_settings.clone());
+            state.borrow_mut().open_settings = Some(Rc::new(move |snapshot| {
+                crate::settings::open(snapshot, tx_settings.clone());
             }));
         }
 
@@ -686,6 +698,25 @@ pub fn run() {
         }
 
         // CLI socket + applier loop.
+        // Check the small palette file for atomic theme replacements. No reload,
+        // no retained WebView references, and no work for unchanged colors.
+        {
+            let st = Rc::downgrade(&state);
+            let mut previous = omarchy_palette::read();
+            glib::timeout_add_seconds_local(2, move || {
+                let Some(st) = st.upgrade() else { return glib::ControlFlow::Break };
+                let next = omarchy_palette::read();
+                // A theme switch can briefly remove the file; keep the last palette.
+                if next.is_some() && next != previous {
+                    let js = omarchy_palette::script(next.as_ref());
+                    for (_, wv) in &st.borrow().webviews {
+                        wv.evaluate_javascript(&js, None, None, None::<&gtk4::gio::Cancellable>, |_| {});
+                    }
+                    previous = next;
+                }
+                glib::ControlFlow::Continue
+            });
+        }
         if let Err(e) = control::start(state.clone(), app, tx, rx) {
             eprintln!("pw: control socket unavailable: {e}");
         }
@@ -715,6 +746,7 @@ pub(crate) mod tests {
             wallpaper: "DefaultWallpaper".into(),
             colors: Default::default(),
             profiles: Vec::new(),
+            ascii: Default::default(),
             current: None,
             profiles_ui: None,
             appearance_ui: None,

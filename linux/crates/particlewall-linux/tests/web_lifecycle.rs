@@ -14,5 +14,7 @@ fn main() {
         return;
     }
     web::tests::web_reapply_reuses_host_and_gpu_teardown_releases_it();
+    settings::tests::settings_preview_save_cancel_and_single_window();
+    println!("settings passed: preview, save, cancel, independent ASCII controls, single window");
     println!("web-lifecycle passed: 30 reapplications, host reuse, widget release");
 }

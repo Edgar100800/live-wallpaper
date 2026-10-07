@@ -164,7 +164,7 @@ impl Tray for ParticleWallTray {
         let profiles = self.profiles.lock().unwrap().clone();
         let mut profile_items: Vec<MenuItem<Self>> = if profiles.is_empty() {
             vec![MenuItem::Standard(StandardItem {
-                label: "(sin perfiles — crea con --profile-save)".into(),
+                label: "(sin perfiles — crea desde Configuración)".into(),
                 enabled: false,
                 ..Default::default()
             })]
@@ -183,13 +183,6 @@ impl Tray for ParticleWallTray {
                 })
                 .collect()
         };
-        profile_items.push(MenuItem::Separator);
-        profile_items.push(MenuItem::Standard(StandardItem {
-            label: "Ajustes… (sliders con vista previa)".into(),
-            icon_name: "preferences-desktop".into(),
-            activate: Box::new(|t: &mut Self| t.send(Command::OpenSettings)),
-            ..Default::default()
-        }));
         wallpapers.push(MenuItem::SubMenu(SubMenu {
             label: "Perfiles de color".into(),
             submenu: profile_items,
@@ -202,7 +195,12 @@ impl Tray for ParticleWallTray {
             submenu: wallpapers,
             ..Default::default()
         })];
-        items.push(MenuItem::Separator);
+        items.push(MenuItem::Standard(StandardItem {
+            label: "Configuración…".into(),
+            icon_name: "preferences-system".into(),
+            activate: Box::new(|t: &mut Self| t.send(Command::OpenSettings)),
+            ..Default::default()
+        }));
         items.push(MenuItem::Separator);
         items.push(MenuItem::Standard(StandardItem {
             label: if paused { "Reanudar".into() } else { "Pausar".into() },

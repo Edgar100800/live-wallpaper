@@ -64,8 +64,23 @@
     uniform sampler2D fillAtlas;
     uniform sampler2D edgeAtlas;
     uniform vec2 gridSize;
+    uniform bool useSystemPalette;
+    uniform bool cleanBackground;
+    uniform float separation;
+    uniform vec3 backgroundColor;
+    uniform vec3 inkColor;
+    uniform vec3 highlightColor;
     in vec2 uv;
     out vec4 color;
+    vec3 unpackColor(uint packed) {
+      return vec3(float((packed >> 5u) & 7u) / 7.0,
+                  float((packed >> 2u) & 7u) / 7.0,
+                  float(packed & 3u) / 3.0);
+    }
+    float lumaAt(ivec2 coord) {
+      coord = clamp(coord, ivec2(0), ivec2(gridSize) - 1);
+      return dot(unpackColor(texelFetch(cells, coord, 0).g), vec3(0.2127, 0.7152, 0.0722));
+    }
     void main() {
       vec2 sourceUV = vec2(uv.x, 1.0 - uv.y);
       vec2 cellPosition = sourceUV * gridSize;
@@ -81,13 +96,28 @@
         atlasUV = (vec2(float(glyph - 9u) * 8.0, 0.0) + local * vec2(8.0) + 0.5) / vec2(40.0, 8.0);
       }
       float mask = glyph < 10u ? texture(fillAtlas, atlasUV).r : texture(edgeAtlas, atlasUV).r;
-      if (mask < 0.05) discard;
-      vec3 rgb = vec3(
-        float((packed >> 5u) & 7u) / 7.0,
-        float((packed >> 2u) & 7u) / 7.0,
-        float(packed & 3u) / 3.0
-      );
-      color = vec4(rgb, mask);
+      vec3 rgb = unpackColor(packed);
+      float luminance = dot(rgb, vec3(0.2127, 0.7152, 0.0722));
+      float visibility = 1.0;
+      if (cleanBackground) {
+        // A clip-specific approximation: bright sky is farther than the subject.
+        float contrast = max(max(abs(luminance - lumaAt(cellCoord + ivec2(1, 0))),
+                                 abs(luminance - lumaAt(cellCoord - ivec2(1, 0)))),
+                             max(abs(luminance - lumaAt(cellCoord + ivec2(0, 1))),
+                                 abs(luminance - lumaAt(cellCoord - ivec2(0, 1)))));
+        float cutoff = mix(0.78, 0.38, separation);
+        float foreground = 1.0 - smoothstep(cutoff - 0.30, cutoff, luminance);
+        visibility = foreground * mix(0.30, 1.0, smoothstep(0.02, 0.12, contrast));
+      }
+      vec3 ink = useSystemPalette
+        ? mix(inkColor, highlightColor, smoothstep(0.08, 0.42, luminance)) : rgb;
+      vec3 background = useSystemPalette ? backgroundColor : vec3(0.0);
+      if (!useSystemPalette && !cleanBackground) {
+        if (mask < 0.05) discard;
+        color = vec4(rgb, mask);
+      } else {
+        color = vec4(mix(background, ink, mask * visibility), 1.0);
+      }
     }
   `;
 
@@ -147,6 +177,31 @@
   gl.uniform1i(gl.getUniformLocation(program, 'edgeAtlas'), 2);
   gl.uniform2f(gl.getUniformLocation(program, 'gridSize'), columns, rows);
 
+  let palette = null;
+  let asciiSettings = null;
+  function updatePalette() {
+    const candidate = window.__pwSystemPalette;
+    const validColor = value => Array.isArray(value) && value.length === 3 &&
+      value.every(channel => Number.isFinite(channel) && channel >= 0 && channel <= 1);
+    palette = candidate && validColor(candidate.background) && validColor(candidate.ink) &&
+      validColor(candidate.highlight) ? candidate : null;
+    asciiSettings = window.__pwASCIISettings || { colorMode: 'omarchy', cleanBackground: Boolean(palette), separation: 0.5 };
+    const themed = palette && asciiSettings.colorMode === 'omarchy';
+    gl.uniform1i(gl.getUniformLocation(program, 'useSystemPalette'), themed ? 1 : 0);
+    gl.uniform1i(gl.getUniformLocation(program, 'cleanBackground'), asciiSettings.cleanBackground ? 1 : 0);
+    const strength = Number(asciiSettings.separation);
+    gl.uniform1f(gl.getUniformLocation(program, 'separation'), Number.isFinite(strength) ? Math.max(0, Math.min(1, strength)) : 0.5);
+    if (palette) {
+      gl.uniform3fv(gl.getUniformLocation(program, 'backgroundColor'), palette.background);
+      gl.uniform3fv(gl.getUniformLocation(program, 'inkColor'), palette.ink);
+      gl.uniform3fv(gl.getUniformLocation(program, 'highlightColor'), palette.highlight);
+    }
+    renderFrame();
+  }
+  // A theme change repaints the frozen frame without advancing playback.
+  addEventListener('pw-system-palette', updatePalette);
+  addEventListener('pw-ascii-settings', updatePalette);
+
   function resize() {
     const ratio = Math.min(window.devicePixelRatio || 1, 1.5);
     const width = Math.max(1, Math.floor(innerWidth * ratio));
@@ -156,6 +211,7 @@
       canvas.height = height;
       gl.viewport(0, 0, width, height);
     }
+    renderFrame();
   }
   addEventListener('resize', resize);
   resize();
@@ -163,6 +219,17 @@
   let currentFrame = 0;
   let elapsed = 0;
   let lastTime = performance.now();
+  function renderFrame() {
+    const background = palette && asciiSettings && asciiSettings.colorMode === 'omarchy' ? palette.background : [0, 0, 0];
+    gl.clearColor(...background, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, fillAtlas);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, edgeAtlas);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+  updatePalette();
   function draw(timestamp) {
     requestAnimationFrame(draw);
     if (window.__pwPaused) {
@@ -180,13 +247,7 @@
       gl.bindTexture(gl.TEXTURE_2D, cells);
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, columns, rows, gl.RG_INTEGER, gl.UNSIGNED_BYTE, bytes);
     }
-    gl.clearColor(0, 0, 0, 1);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, fillAtlas);
-    gl.activeTexture(gl.TEXTURE2);
-    gl.bindTexture(gl.TEXTURE_2D, edgeAtlas);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    renderFrame();
   }
   requestAnimationFrame(draw);
 })().catch(function (error) {
