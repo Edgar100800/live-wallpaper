@@ -78,7 +78,7 @@ impl Tray for ParticleWallTray {
             description: if self.is_paused() {
                 "Pausado — click para el menu".into()
             } else if fps == 0 {
-                "Activo (sin limite de FPS)".into()
+                "Activo (al ritmo del monitor)".into()
             } else {
                 format!("Activo ({fps} FPS)")
             },
@@ -215,7 +215,7 @@ impl Tray for ParticleWallTray {
         items.push(MenuItem::SubMenu(SubMenu {
             label: "Limite de FPS".into(),
             submenu: [
-                (0u32, "Sin limite"),
+                (0u32, "Monitor"),
                 (15, "15"),
                 (30, "30"),
                 (60, "60"),

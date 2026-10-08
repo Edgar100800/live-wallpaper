@@ -2,8 +2,9 @@
 //
 // Mirrors MetalParticleRenderer in Sources/ParticleWall/WallpaperRenderer.swift
 // (all ten models, the flow-state compute kernel and the graph overlay).
-// Point sprites are expanded to instanced quads (WebGPU has no point_size):
-// 6 vertices per particle, vertex_index/6 = particle id.
+// Point sprites are expanded to quads (WebGPU has no point_size). vsMain
+// emits 6 vertices per particle (vertex_index/6 = particle id); vsIndexed
+// emits 4 unique vertices per particle for indexed draws (vertex_index/4).
 // Uniforms layout must stay 16-byte aligned and identical to the Swift
 // Uniforms struct; viewport is the engine-v1 addition for quad expansion.
 //
@@ -604,6 +605,22 @@ struct VertexOut {
   @location(1) color: vec4f,
 }
 
+// Expands one quad corner (`f` in 0..1 sprite fractions) in physical pixels.
+fn quadCorner(clip: vec2f, pointSizePx: f32, color: vec4f, f: vec2f) -> VertexOut {
+  let ndc = (f - vec2f(0.5)) * 2.0 * pointSizePx / u.viewport;
+
+  var out: VertexOut;
+  out.position = vec4f(clip + ndc, 0.0, 1.0);
+  out.uv = f;
+  out.color = color;
+  return out;
+}
+
+// Corner order of the 4 unique quad vertices: (0,0) (1,0) (0,1) (1,1).
+fn cornerOffset(vi: u32) -> vec2f {
+  return vec2f(f32(vi & 1u), f32(vi >> 1u));
+}
+
 @vertex
 fn vsMain(@builtin(vertex_index) vi: u32) -> VertexOut {
   let corner = vi % 6u;
@@ -615,14 +632,16 @@ fn vsMain(@builtin(vertex_index) vi: u32) -> VertexOut {
     vec2f(0.0, 0.0), vec2f(1.0, 0.0), vec2f(0.0, 1.0),
     vec2f(0.0, 1.0), vec2f(1.0, 0.0), vec2f(1.0, 1.0)
   );
-  let f = vec2f(offsets[corner]);
-  let ndc = (f - vec2f(0.5)) * 2.0 * s.pointSizePx / u.viewport;
+  return quadCorner(s.clip, s.pointSizePx, s.color, offsets[corner]);
+}
 
-  var out: VertexOut;
-  out.position = vec4f(s.clip + ndc, 0.0, 1.0);
-  out.uv = f;
-  out.color = s.color;
-  return out;
+// Indexed quads: 4 unique vertices per particle (vertex_index / 4 = particle
+// id) drawn with the index pattern 0 1 2 2 1 3, so the post-transform cache
+// shares the diagonal and particleSample runs 4 times instead of 6.
+@vertex
+fn vsIndexed(@builtin(vertex_index) vi: u32) -> VertexOut {
+  let s = particleSample(vi >> 2u, u);
+  return quadCorner(s.clip, s.pointSizePx, s.color, cornerOffset(vi & 3u));
 }
 
 @fragment

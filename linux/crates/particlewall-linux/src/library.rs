@@ -76,8 +76,19 @@ pub fn all() -> Vec<Wallpaper> {
             list.push(Wallpaper { id, name, index: path.join("index.html") });
         }
     }
+    // Without WebKit only the wgpu wallpapers can render.
+    #[cfg(all(feature = "gpu", not(feature = "webkit")))]
+    list.retain(|w| super::gpu_model_for(&w.id).is_some() || ascii_clip_dir(w).is_some());
     list.sort_by(|a,b| a.name.cmp(&b.name));
     list
+}
+
+/// Directory of a native ascii-video-v1 clip (bundled `clip.asciivideo` or
+/// imported `stream.json` + chunks) for `wp`, rendered with wgpu.
+#[cfg(feature = "gpu")]
+pub fn ascii_clip_dir(wp: &Wallpaper) -> Option<PathBuf> {
+    let dir = wp.index.parent()?;
+    particlewall_render::ascii::AsciiClip::exists_in(dir).then(|| dir.to_path_buf())
 }
 
 pub fn find(id_or_name: &str) -> Option<Wallpaper> {

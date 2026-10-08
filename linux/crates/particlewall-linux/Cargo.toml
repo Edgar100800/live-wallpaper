@@ -17,7 +17,7 @@ required-features = []
 name = "web-lifecycle"
 path = "tests/web_lifecycle.rs"
 harness = false
-required-features = ["web", "gpu"]
+required-features = ["webkit", "gpu"]
 
 [dependencies]
 gtk4 = { version = "0.11", features = ["v4_12"] }
@@ -34,9 +34,14 @@ zbus = { version = "5", optional = true, default-features = false, features = ["
 serde = { version = "1.0.229", features = ["derive"] }
 wayland-client = { version = "0.31", optional = true, features = ["system", "dlopen"] }
 wayland-protocols-wlr = { version = "0.3", optional = true, features = ["client"] }
+wayland-protocols = { version = "0.32", optional = true, features = ["client", "staging"] }
+glib-unix = { version = "0.22", optional = true }
 
 [features]
-default = ["web", "gpu", "power"]
-web = ["dep:webkit6", "dep:gdk4-wayland"]
+default = ["webkit", "gpu", "power"]
+# HTML/JS and ASCII-video wallpapers through WebKitGTK. GPU-only builds
+# (--no-default-features --features gpu,power) keep the daemon, settings
+# window, tray and CLI, and list only the wgpu wallpapers.
+webkit = ["dep:webkit6"]
 power = ["dep:zbus"]
-gpu = ["dep:particlewall-render", "dep:gdk4-wayland", "dep:wayland-client", "dep:wayland-protocols-wlr"]
+gpu = ["dep:particlewall-render", "dep:gdk4-wayland", "dep:wayland-client", "dep:wayland-protocols-wlr", "dep:wayland-protocols", "dep:glib-unix"]

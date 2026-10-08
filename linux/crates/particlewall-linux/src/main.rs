@@ -5,7 +5,7 @@
 //!   particlewall --pause      pause rendering on all outputs
 //!   particlewall --resume     resume rendering
 //!   particlewall --toggle     toggle pause
-//!   particlewall --fps <N>    set global FPS cap (0 = unlimited)
+//!   particlewall --fps <N>    set global FPS cap (0 = monitor refresh rate)
 //!   particlewall --list       list available wallpapers
 //!   particlewall --apply <id|nombre>   switch wallpaper live
 //!   particlewall --set-color background=#0a0a1a --set-color particle=#7ee0c0
@@ -17,21 +17,16 @@
 //!   particlewall --app        launcher entry: ensure the daemon runs and
 //!                             open the settings window
 
-#[cfg(feature = "web")]
 mod layer;
-#[cfg(feature = "web")]
 mod web;
-#[cfg(feature = "web")]
 mod control;
-#[cfg(all(feature = "web", feature = "power"))]
+#[cfg(feature = "power")]
 mod power;
-#[cfg(feature = "web")]
 mod settings;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    #[cfg(feature = "web")]
     if args.first().map(String::as_str) == Some("--reprocess") {
         let result = args.get(1).ok_or_else(|| "Falta el ID del fondo".to_string()).and_then(|id| {
             let size = args.get(2).ok_or("Falta el tamaño de celda (4, 6, 8, 12 o 16)")?.parse().map_err(|_| "Tamaño de celda inválido")?;
@@ -41,7 +36,6 @@ fn main() {
         return;
     }
 
-    #[cfg(feature = "web")]
     if args.first().map(String::as_str) == Some("--import-youtube") {
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let result = args.get(1).ok_or_else(|| "Falta la URL".to_string()).and_then(|url| {
@@ -65,16 +59,7 @@ fn main() {
         return;
     }
 
-    #[cfg(feature = "web")]
-    {
-        web::run();
-    }
-    #[cfg(not(feature = "web"))]
-    {
-        eprintln!("particlewall was built without the `web` feature.");
-        eprintln!("Rebuild with --features web, or use pw-layer-spike for the no-webkit spike.");
-        std::process::exit(2);
-    }
+    web::run();
 }
 
 /// Desktop-launcher mode: make sure the daemon is running, then open the
@@ -164,10 +149,10 @@ fn cli_command(args: &[String]) -> Option<CliAction> {
         Some("--settings") => Some(CliAction::Send(r#"{"cmd":"open-settings"}"#.into())),
         Some("--status") => Some(CliAction::Send(r#"{"cmd":"status"}"#.into())),
         Some("--fps") => {
-            let v = args.get(1).expect("--fps requires a value (0 = unlimited)");
+            let v = args.get(1).expect("--fps requires a value (0 = monitor refresh rate)");
             v.parse::<u32>().ok().map(|v| CliAction::Send(format!(r#"{{"cmd":"fps","value":{v}}}"#)))
                 .or_else(|| {
-                    eprintln!("--fps expects an integer (0 = unlimited), got '{v}'");
+                    eprintln!("--fps expects an integer (0 = monitor refresh rate), got '{v}'");
                     None
                 })
         }
@@ -231,16 +216,11 @@ fn cli_command(args: &[String]) -> Option<CliAction> {
             Some(CliAction::Send(profile_cmd("profile-apply", args)))
         }
         Some("--list") => {
-            #[cfg(feature = "web")]
-            {
-                let mut out = String::new();
-                for wp in web::library::all() {
-                    out.push_str(&format!("{}\t{}\n", wp.id, wp.name));
-                }
-                Some(CliAction::Print(out))
+            let mut out = String::new();
+            for wp in web::library::all() {
+                out.push_str(&format!("{}\t{}\n", wp.id, wp.name));
             }
-            #[cfg(not(feature = "web"))]
-            Some(CliAction::Print(String::new()))
+            Some(CliAction::Print(out))
         }
         _ => None,
     }

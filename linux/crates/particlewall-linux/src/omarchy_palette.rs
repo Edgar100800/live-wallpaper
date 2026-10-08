@@ -44,6 +44,18 @@ fn paths() -> Vec<PathBuf> {
     ]
 }
 
+impl Palette {
+    /// Colors for the native ASCII renderer.
+    #[cfg(feature = "gpu")]
+    pub fn to_ascii(&self) -> particlewall_render::ascii::AsciiPalette {
+        particlewall_render::ascii::AsciiPalette {
+            background: self.background,
+            ink: self.ink,
+            highlight: self.highlight,
+        }
+    }
+}
+
 pub fn read() -> Option<Palette> {
     paths().iter().find_map(|path| parse(&std::fs::read_to_string(path).ok()?))
 }

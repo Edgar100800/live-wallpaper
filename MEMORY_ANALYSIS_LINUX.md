@@ -164,3 +164,16 @@ configuración. El contador de salidas web también usa los monitores disponible
 Estas correcciones sustituyen los pendientes de FPS y `outputs: 0` descritos en
 la validación anterior. Lluvia de Ruido y la inyección de fallos Wayland siguen
 pendientes.
+
+### Optimización GPU/CPU (2026-10-08)
+
+Lluvia de Ruido y el grafo quedan corregidos: los pases de cómputo usan grupos
+vacíos en lugar del grupo 0 de render, así ningún buffer se enlaza a la vez como
+`STORAGE_READ_ONLY` y `STORAGE_READ_WRITE`. La prueba
+`every_model_encodes_without_validation_errors` ejecuta los pases reales del
+presenter para los doce modelos, con y sin grafo.
+
+VRAM del presenter en vivo en DP-3 (2560×1440, escala 1,25): 123 MiB → 47 MiB.
+Origen: buffers a resolución nativa con escala fraccional, una imagen de
+swapchain menos y `MemoryHints::MemoryUsage`. Detalle en `PROJECT_PROGRESS.md`.
+

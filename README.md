@@ -131,6 +131,93 @@ del origen cuando la clase exportada expone `.camera`; respeta pausa y FPS cap. 
 wallpapers es-module existentes se regeneran automáticamente al arrancar (upgrade
 idempotente de su index.html).
 
+## Linux (Omarchy / Hyprland)
+
+El daemon Linux vive en `linux/` (Rust, GTK4, gtk4-layer-shell y wgpu). Los fondos
+GPU comparten el mismo WGSL que macOS
+(`shared/backgrounds/engines/particle-v1/particle.wgsl`) y los fondos de video ASCII
+se dibujan con wgpu (`shared/backgrounds/engines/ascii-video-v1/ascii.wgsl`).
+WebKitGTK 6 es opcional: solo aporta el respaldo HTML.
+
+### Instalar
+
+```bash
+sudo pacman -S --needed gtk4 gtk4-layer-shell rustup
+sudo pacman -S --needed webkitgtk-6.0   # opcional: respaldo HTML
+rustup default stable
+./linux/install.sh                      # --gpu-only fuerza la versión sin WebKit
+```
+
+`install.sh` compila en release, instala la unidad `systemd --user`
+(`particlewall.service`, ligada a `graphical-session.target`), la entrada del
+launcher y el icono, y arranca el daemon. Las rutas apuntan al checkout desde el
+que se ejecuta. Sin WebKitGTK compila automáticamente la versión solo GPU
+(`cargo build -p particlewall-linux --no-default-features --features gpu,power`):
+conserva ajustes, bandeja, CLI, video ASCII e importación de YouTube.
+
+### Uso
+
+- **Launcher**: busca *ParticleWall* en el menú de aplicaciones (o
+  `particlewall --app`). Arranca el daemon si hace falta y abre la ventana de
+  ajustes: pestañas *Fondo* (fondo, pausa y FPS), *Partículas* (colores, tamaño,
+  brillo y perfiles), *Video ASCII* e *Importar video*. Los cambios se ven en
+  vivo y se conservan con *Guardar cambios*.
+- **Bandeja**: el icono del panel ofrece fondos, configuración, pausa, límite de
+  FPS, perfiles, tamaño e intensidad.
+- **CLI** (con el daemon en marcha):
+
+  ```bash
+  particlewall --list                      # fondos disponibles
+  particlewall --apply NebulaWallpaper     # aplicar por ID o nombre
+  particlewall --set-color background=#0a0a1a --set-color particle=#7ee0c0
+  particlewall --fps 30                    # 0 = frecuencia del monitor
+  particlewall --pause | --resume | --toggle
+  particlewall --status                    # estado en JSON
+  ```
+
+La superficie se mapea en la capa Bottom: por encima del fondo estático de
+Omarchy y por debajo de ventanas y barra. Pantalla completa, bloqueo y suspensión
+pausan el render.
+
+### Consumo GPU/CPU
+
+- Resolución nativa en salidas con escala fraccional (`wp_fractional_scale_v1` +
+  `wp_viewporter`): una pantalla 2560×1440 a 1,25× renderiza 2560×1440, no 4096×2304.
+- Un device wgpu, shader y pipelines compartidos por todas las pantallas; dos
+  imágenes de swapchain por salida.
+- Las ventanas GTK que alojan WebKit solo se mapean con un fondo web: realizarlas
+  arranca el device Vulkan propio de GTK (~70 MiB de VRAM) aunque el fondo sea GPU.
+- Quads indexados: `particleSample` corre 4 veces por partícula en vez de 6.
+- Video ASCII nativo: una pasada a pantalla completa y una subida de celdas
+  (2 bytes por celda) solo cuando cambia el frame del clip; sigue la paleta de
+  Omarchy y repinta al cambiar de tema aunque esté en pausa.
+- Con el límite de FPS en 0 (*Monitor*) cada pantalla dibuja al recibir el
+  `wl_surface.frame` del compositor: a la frecuencia de su monitor (165 Hz en un
+  panel de 165 Hz) y alineado con su refresco. Un límite explícito (15/30/60)
+  usa un temporizador. El video ASCII solo presenta cuando cambia el frame del
+  clip (~30/s) en ambos modos.
+- En pausa el bucle despierta a 4 Hz en lugar de al límite de FPS.
+
+Medido con el daemon en una RTX 3060 Ti a 2560×1440 y 30 FPS: 47 MiB de VRAM,
+~0,9 % de un núcleo de CPU (0,1 % en pausa) y menos del 2 % del tiempo de GPU con
+el fondo más pesado (Nebulosa). El video ASCII: 47 MiB de VRAM y ~1,1–1,5 % de un
+núcleo. Partículas sincronizadas a 165 Hz: ~4,2 % de un núcleo; con límite 60,
+~2,3 %. `PW_LOG_FPS=1` imprime los frames presentados por pantalla cada 5 s. Con la ventana de ajustes abierta GTK añade su
+propio contexto GPU. El límite de FPS es el ajuste con más impacto: el compositor
+recompone la pantalla en cada frame del fondo.
+
+Mediciones reproducibles:
+
+```bash
+cd linux
+cargo run --release -p particlewall-render --example bench   # GPU offscreen por fondo
+cargo run --release -p particlewall-render --example live    # superficie real, CPU por frame
+cargo test --release -p particlewall-render -- --test-threads=1
+```
+
+Las pruebas de render corren con `--test-threads=1`: varios contextos GPU en
+paralelo cuelgan el driver NVIDIA.
+
 ## Arquitectura
 
 ```

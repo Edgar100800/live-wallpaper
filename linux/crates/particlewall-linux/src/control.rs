@@ -11,11 +11,18 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
-#[cfg(feature = "web")]
 use crate::web::tray::ParticleWallTray;
 use crate::web::{library, DEFAULT_FPS_CAP};
+#[cfg(feature = "webkit")]
 use webkit6::prelude::*;
-use webkit6::WebView;
+#[cfg(feature = "webkit")]
+pub use webkit6::WebView;
+
+/// GPU-only builds have no web renderer: an uninhabited stand-in keeps the
+/// state shape while `webviews` stays empty.
+#[cfg(not(feature = "webkit"))]
+#[derive(Clone, Debug, PartialEq)]
+pub enum WebView {}
 
 pub fn socket_path() -> std::path::PathBuf {
     let runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
@@ -184,9 +191,18 @@ impl DaemonState {
             "window.__pwApplySettings && window.__pwApplySettings({{{}}});",
             parts.join(",")
         );
+        self.eval_js(&js);
+    }
+
+    /// Runs `js` in every live web wallpaper (fire-and-forget; errors such
+    /// as a document mid-load are non-fatal). No-op without WebKit.
+    pub fn eval_js(&self, js: &str) {
+        #[cfg(feature = "webkit")]
         for (_, wv) in &self.webviews {
-            wv.evaluate_javascript(&js, None, None, None::<&gtk4::gio::Cancellable>, |_| {});
+            wv.evaluate_javascript(js, None, None, None::<&gtk4::gio::Cancellable>, |_| {});
         }
+        #[cfg(not(feature = "webkit"))]
+        let _ = js;
     }
 
     /// Mirrors the current appearance into the shared view used by the tray
@@ -227,11 +243,7 @@ impl DaemonState {
 
     fn set_paused(&mut self, paused: bool) -> String {
         self.flags.paused.store(paused, Ordering::Relaxed);
-        let js = format!("window.__pwPaused = {paused}");
-        for (_, wv) in &self.webviews {
-            // Fire-and-forget; errors are non-fatal (e.g. mid-load).
-            wv.evaluate_javascript(&js, None, None, None::<&gtk4::gio::Cancellable>, |_| {});
-        }
+        self.eval_js(&format!("window.__pwPaused = {paused}"));
         if paused {
             "ok\n".into()
         } else {
@@ -241,10 +253,7 @@ impl DaemonState {
 
     fn set_fps(&mut self, fps: u32) {
         self.flags.fps_cap.store(fps, Ordering::Relaxed);
-        let js = format!("window.__pwFPSCap = {fps}");
-        for (_, wv) in &self.webviews {
-            wv.evaluate_javascript(&js, None, None, None::<&gtk4::gio::Cancellable>, |_| {});
-        }
+        self.eval_js(&format!("window.__pwFPSCap = {fps}"));
     }
 
     /// Applies a command; returns the text reply for socket clients.
@@ -354,6 +363,7 @@ pub type CmdTx = async_channel::Sender<(Option<UnixStream>, Command)>;
 
 /// Web-only fallback when no renderer switch hook is installed (gpu feature
 /// disabled): load the wallpaper into the existing web children.
+#[cfg(feature = "webkit")]
 fn web_fallback(state: &SharedState, wp: &library::Wallpaper) -> String {
     let uri = format!("file://{}", wp.index.display());
     let st = state.borrow_mut();
@@ -361,6 +371,11 @@ fn web_fallback(state: &SharedState, wp: &library::Wallpaper) -> String {
         wv.load_uri(&uri);
     }
     format!("{{\"applied\":\"{}\"}}\n", wp.name)
+}
+
+#[cfg(not(feature = "webkit"))]
+fn web_fallback(_state: &SharedState, wp: &library::Wallpaper) -> String {
+    format!("{{\"error\":\"'{}' needs a build with the webkit feature\"}}\n", wp.name)
 }
 
 /// Switches the active wallpaper. Runs on the GTK main thread with NO active
@@ -425,9 +440,7 @@ fn configure(state: &SharedState, cfg: &library::Config, save: bool) -> String {
         st.set_fps(cfg.fps_cap);
         if !changed_wallpaper {
             let js = st.ascii_settings(id).script();
-            for (_, wv) in &st.webviews {
-                wv.evaluate_javascript(&js, None, None, None::<&gtk4::gio::Cancellable>, |_| {});
-            }
+            st.eval_js(&js);
         }
     }
     if changed_wallpaper { apply_wallpaper_inner(state, id, false); }

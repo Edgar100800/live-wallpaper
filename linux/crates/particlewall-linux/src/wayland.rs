@@ -9,15 +9,34 @@
 //! These surfaces are only ever touched by our GPU presenter, which is
 //! exactly the fifo-v1 recommendation: only the component performing
 //! wl_surface.attach should use the protocol.
+//!
+//! Buffers are sized at the output's native resolution: with
+//! wp_fractional_scale_v1 + wp_viewporter a 1.25x output renders 2560x1440
+//! instead of the integer-scale 4096x2304 the compositor would downsample
+//! (2.56x the pixels and swapchain memory).
+//!
+//! Frame pacing: with the FPS cap at 0 each surface asks for a
+//! wl_surface.frame callback alongside every present; the compositor answers
+//! once per refresh of that surface's output, so rendering follows the
+//! monitor's rate (165 Hz on a 165 Hz panel) and stops while the compositor
+//! withholds callbacks. The callback request goes out before the Vulkan WSI's
+//! commit on the same wl_display, so that commit carries it.
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::os::fd::{AsRawFd, RawFd};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use wayland_client::protocol::{wl_compositor::WlCompositor, wl_output, wl_output::WlOutput, wl_registry, wl_registry::WlRegistry, wl_surface, wl_surface::WlSurface};
+use wayland_client::protocol::{wl_callback::{self, WlCallback}, wl_compositor::WlCompositor, wl_output, wl_output::WlOutput, wl_registry, wl_registry::WlRegistry, wl_surface, wl_surface::WlSurface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_shell_v1::{Layer, ZwlrLayerShellV1}};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_surface_v1, zwlr_layer_surface_v1::{Anchor, KeyboardInteractivity, ZwlrLayerSurfaceV1}};
+use wayland_protocols::wp::fractional_scale::v1::client::{
+    wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
+    wp_fractional_scale_v1::{self, WpFractionalScaleV1},
+};
+use wayland_protocols::wp::viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter};
 
 use crate::web::layer::NAMESPACE;
 
@@ -33,6 +52,8 @@ struct OutInfo {
 struct WState {
     compositor: Option<WlCompositor>,
     shell: Option<ZwlrLayerShellV1>,
+    fractional: Option<WpFractionalScaleManagerV1>,
+    viewporter: Option<WpViewporter>,
     outputs: Vec<(WlOutput, Arc<Mutex<OutInfo>>)>,
     /// Latest layer-surface configure (serial, width, height, logical).
     configure: Option<(u32, u32, u32)>,
@@ -58,6 +79,12 @@ impl Dispatch<WlRegistry, ()> for WState {
                 "zwlr_layer_shell_v1" => {
                     let shell: ZwlrLayerShellV1 = registry.bind(name, version.min(1), qh, ());
                     state.shell = Some(shell);
+                }
+                "wp_fractional_scale_manager_v1" => {
+                    state.fractional = Some(registry.bind(name, 1, qh, ()));
+                }
+                "wp_viewporter" => {
+                    state.viewporter = Some(registry.bind(name, 1, qh, ()));
                 }
                 "wl_output" if version >= 4 => {
                     let info = Arc::new(Mutex::new(OutInfo::default()));
@@ -132,6 +159,42 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for WState {
     }
 }
 
+/// Preferred scale in 1/120 units; 0 until the compositor sends one.
+impl Dispatch<WpFractionalScaleV1, Arc<AtomicU32>> for WState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        data: &Arc<AtomicU32>,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if let wp_fractional_scale_v1::Event::PreferredScale { scale } = event {
+            data.store(scale, Ordering::Relaxed);
+        }
+    }
+}
+
+wayland_client::delegate_noop!(WState: WpFractionalScaleManagerV1);
+wayland_client::delegate_noop!(WState: WpViewporter);
+wayland_client::delegate_noop!(WState: WpViewport);
+
+/// Frame callback "done": the compositor is ready for the next frame.
+impl Dispatch<WlCallback, Arc<AtomicBool>> for WState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WlCallback,
+        event: wl_callback::Event,
+        data: &Arc<AtomicBool>,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if let wl_callback::Event::Done { .. } = event {
+            data.store(true, Ordering::Release);
+        }
+    }
+}
+
 impl Dispatch<WlSurface, ()> for WState {
     fn event(
         _state: &mut Self,
@@ -151,6 +214,8 @@ struct Inner {
     qh: QueueHandle<WState>,
     compositor: WlCompositor,
     shell: ZwlrLayerShellV1,
+    /// Native-resolution sizing; both are needed, else integer buffer scale.
+    native_scaling: Option<(WpFractionalScaleManagerV1, WpViewporter)>,
     outputs: Vec<(WlOutput, Arc<Mutex<OutInfo>>)>,
 }
 
@@ -165,15 +230,24 @@ pub struct GpuLayerSurface {
     _gpu: Rc<Inner>,
     surface: WlSurface,
     layer_surface: ZwlrLayerSurfaceV1,
+    fractional: Option<WpFractionalScaleV1>,
+    viewport: Option<WpViewport>,
+    /// Set by the frame callback requested with the last present.
+    frame_done: Arc<AtomicBool>,
     /// wl_display pointer of the dedicated connection.
     pub wl_display: *mut std::ffi::c_void,
     /// wl_surface (as wl_proxy) pointer backing `surface`.
     pub wl_surface: *mut std::ffi::c_void,
-    /// Physical buffer size (logical configure size x buffer scale).
+    /// Physical buffer size: logical configure size x preferred fractional
+    /// scale, or x integer buffer scale without wp_fractional_scale_v1.
     pub size_px: (u32, u32),
-    /// Buffer scale applied via set_buffer_scale (kept for diagnostics).
+    /// Integer wl_output scale (kept for diagnostics).
     #[allow(dead_code)]
     pub scale: i32,
+    /// size_px relative to the integer-scale buffer the daemon used before
+    /// native sizing (0.625 on a 1.25x output). Point sizes are multiplied
+    /// by it so particles keep their on-screen size.
+    pub point_scale: f32,
 }
 
 impl WaylandGpu {
@@ -199,6 +273,7 @@ impl WaylandGpu {
             .take()
             .ok_or("missing wl_compositor global")?;
         let shell = state.shell.take().ok_or("missing zwlr_layer_shell_v1 global")?;
+        let native_scaling = state.fractional.take().zip(state.viewporter.take());
         let outputs = std::mem::take(&mut state.outputs);
 
         Ok(Self {
@@ -209,9 +284,36 @@ impl WaylandGpu {
                 qh,
                 compositor,
                 shell,
+                native_scaling,
                 outputs,
             }),
         })
+    }
+
+    /// Socket of the dedicated connection, for the host's main-loop watch.
+    pub fn poll_fd(&self) -> RawFd {
+        self.inner.conn.backend().poll_fd().as_raw_fd()
+    }
+
+    /// Reads whatever the compositor sent and dispatches it without
+    /// blocking (frame callbacks, configures). Call when `poll_fd` is
+    /// readable. The Vulkan WSI reads the same socket for its own queue;
+    /// prepare_read keeps the two readers consistent.
+    pub fn dispatch(&self) -> Result<(), String> {
+        let inner = &self.inner;
+        let mut queue = inner.queue.borrow_mut();
+        let mut state = inner.state.borrow_mut();
+        queue.dispatch_pending(&mut state).map_err(|e| format!("wayland dispatch: {e}"))?;
+        if let Some(guard) = queue.prepare_read() {
+            match guard.read() {
+                Ok(_) => {}
+                Err(wayland_client::backend::WaylandError::Io(e))
+                    if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => return Err(format!("wayland read: {e}")),
+            }
+        }
+        queue.dispatch_pending(&mut state).map_err(|e| format!("wayland dispatch: {e}"))?;
+        Ok(())
     }
 
     /// Connector names ("HDMI-A-1") of the current outputs.
@@ -234,7 +336,16 @@ impl WaylandGpu {
         let scale = out_info.lock().unwrap().scale.max(1);
 
         let surface: WlSurface = inner.compositor.create_surface(&inner.qh, ());
-        let layer_surface = map_background_role(inner, &surface, output, scale);
+        let preferred = Arc::new(AtomicU32::new(0));
+        let native = inner.native_scaling.as_ref().map(|(manager, viewporter)| {
+            (
+                manager.get_fractional_scale(&surface, &inner.qh, preferred.clone()),
+                viewporter.get_viewport(&surface, &inner.qh, ()),
+            )
+        });
+        let (fractional, viewport) = native.unzip();
+        let layer_surface =
+            map_background_role(inner, &surface, output, if viewport.is_some() { 1 } else { scale });
 
         let wl_display = inner.conn.backend().display_ptr();
         let wl_surface = surface.id().as_ptr();
@@ -244,16 +355,39 @@ impl WaylandGpu {
             _gpu: self.inner.clone(),
             surface,
             layer_surface,
+            fractional,
+            viewport,
+            frame_done: Arc::new(AtomicBool::new(false)),
             wl_display: wl_display.cast(),
             wl_surface: wl_surface.cast(),
             size_px: (1, 1),
             scale,
+            point_scale: 1.0,
         };
         if wl_display.is_null() || wl_surface.is_null() {
             return Err(format!("null Wayland handles for {name}"));
         }
-        let (_serial, logical_w, logical_h) = wait_configure(inner, name)?;
-        session.size_px = (logical_w.max(1) * scale as u32, logical_h.max(1) * scale as u32);
+        let wants_fraction = session.viewport.is_some();
+        let (_serial, logical_w, logical_h) = wait_configure(inner, name, wants_fraction.then_some(&*preferred))?;
+        let (logical_w, logical_h) = (logical_w.max(1), logical_h.max(1));
+        let integer_px = (logical_w * scale as u32, logical_h * scale as u32);
+        let fraction = preferred.load(Ordering::Relaxed);
+        match &session.viewport {
+            Some(viewport) if fraction > 0 => {
+                // Double-buffered: applies with the presenter's first commit.
+                viewport.set_destination(logical_w as i32, logical_h as i32);
+                let px = |logical: u32| (u64::from(logical) * u64::from(fraction)).div_ceil(120) as u32;
+                session.size_px = (px(logical_w), px(logical_h));
+            }
+            _ => {
+                // No preferred scale arrived: keep the integer path.
+                if wants_fraction && scale > 1 {
+                    session.surface.set_buffer_scale(scale);
+                }
+                session.size_px = integer_px;
+            }
+        }
+        session.point_scale = session.size_px.0 as f32 / integer_px.0 as f32;
         Ok(session)
     }
 }
@@ -290,13 +424,26 @@ fn map_background_role(
 }
 
 /// Rounds the event queue until the layer surface gets its configure
-/// (acked by the handler). Returns the logical (width, height).
-fn wait_configure(inner: &Rc<Inner>, name: &str) -> Result<(u32, u32, u32), String> {
+/// (acked by the handler) and, when requested, its preferred fractional
+/// scale. Returns the logical (width, height); a missing preferred scale is
+/// not an error (the caller falls back to the integer scale).
+fn wait_configure(
+    inner: &Rc<Inner>,
+    name: &str,
+    preferred: Option<&AtomicU32>,
+) -> Result<(u32, u32, u32), String> {
     inner.state.borrow_mut().configure = None;
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(800);
+    let mut configured = None;
     loop {
-        if std::time::Instant::now() >= deadline {
-            return Err(format!("output {name} never sent a configure"));
+        let scale_known = preferred.is_none_or(|p| p.load(Ordering::Relaxed) > 0);
+        match configured {
+            Some(cfg) if scale_known => return Ok(cfg),
+            Some(cfg) if std::time::Instant::now() >= deadline => return Ok(cfg),
+            None if std::time::Instant::now() >= deadline => {
+                return Err(format!("output {name} never sent a configure"));
+            }
+            _ => {}
         }
         inner
             .queue
@@ -308,12 +455,23 @@ fn wait_configure(inner: &Rc<Inner>, name: &str) -> Result<(u32, u32, u32), Stri
             return Err(format!("output {name} closed while configuring"));
         }
         if let Some(cfg) = state.configure.take() {
-            return Ok(cfg);
+            configured = Some(cfg);
         }
     }
 }
 
 impl GpuLayerSurface {
+    /// Requests a frame callback; the next present's commit carries it.
+    pub fn request_frame(&self) {
+        self.frame_done.store(false, Ordering::Release);
+        self.surface.frame(&self._gpu.qh, self.frame_done.clone());
+    }
+
+    /// True once since the compositor answered the last `request_frame`.
+    pub fn take_frame_done(&self) -> bool {
+        self.frame_done.swap(false, Ordering::AcqRel)
+    }
+
     /// Raw handle pair for `GpuPresenter::new`.
     pub fn handles(&self) -> particlewall_render::gpu::WaylandHandles {
         particlewall_render::gpu::WaylandHandles {
@@ -325,6 +483,12 @@ impl GpuLayerSurface {
 
 impl Drop for GpuLayerSurface {
     fn drop(&mut self) {
+        if let Some(viewport) = &self.viewport {
+            viewport.destroy();
+        }
+        if let Some(fractional) = &self.fractional {
+            fractional.destroy();
+        }
         self.layer_surface.destroy();
         self.surface.destroy();
         let _ = self._gpu.conn.flush();

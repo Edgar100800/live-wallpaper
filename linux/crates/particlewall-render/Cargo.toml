@@ -11,6 +11,11 @@ raw-window-handle = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 pollster = "0.4"
+png = "0.17"
 
 [dev-dependencies]
 pollster = "0.4"
+# examples/live.rs: real layer-shell presenter check on a Wayland session.
+wayland-client = { version = "0.31", features = ["system"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
