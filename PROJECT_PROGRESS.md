@@ -102,6 +102,38 @@ Rama de trabajo: `feature/linux-port`.
   formación balanceada 3×3 y profundidad animada), sliders de ajustes,
   launcher (`gtk-launch particlewall`) y pausa/reanudación por energía.
 
+### Optimización GPU/CPU en Linux (2026-10-08)
+
+Medido en RTX 3060 Ti, salida DP-3 2560×1440 con escala 1,25, 30 FPS.
+
+- Quads indexados (`vsIndexed`): 4 vértices únicos por partícula con el patrón
+  de índices 0 1 2 2 1 3 en lotes de 16.384; la caché post-transformación
+  comparte la diagonal y `particleSample` corre 4 veces en vez de 6. Tiempo GPU
+  1,07–1,69× menor en los doce fondos (Nebulosa 0,79 → 0,50 ms por frame) e
+  imagen idéntica a `vsMain` (diferencia máxima ≤ 1/255, prueba
+  `indexed_quads_match_list6_pixels`). Se descartaron quads instanciados (más
+  lentos en Espiral Prima) y muestras precalculadas por compute (pierden por
+  tráfico de memoria). `vsMain` sigue intacto para macOS.
+- Superficies a resolución nativa: con `wp_fractional_scale_v1` +
+  `wp_viewporter` una salida 1,25× renderiza 2560×1440 en vez de 4096×2304
+  (escala entera 2 reducida por el compositor). `point_scale` conserva el
+  tamaño en pantalla de las partículas. Sin esos protocolos se mantiene la
+  escala entera.
+- Un solo device wgpu, shader y pipelines compartidos por todas las salidas;
+  `MemoryHints::MemoryUsage`; latencia máxima de frame 1 (2 imágenes de
+  swapchain en vez de 3 en NVIDIA/Wayland).
+- VRAM del presenter en vivo: 123 MiB → 47 MiB por salida. Con tres salidas el
+  device compartido ahorra además ~18 MiB.
+- Corregidos los conflictos de bindings que invalidaban cada frame de Lluvia de
+  Ruido y del grafo en wgpu (buffer enlazado de solo lectura y de
+  lectura-escritura en el mismo dispatch). Prueba
+  `every_model_encodes_without_validation_errors`.
+- Pausa: el bucle GPU sondea a 4 Hz en vez de despertar al límite de FPS.
+- El WGSL se embebe en el binario (`include_str!`); ya no depende del checkout.
+- CPU en vivo ~0,9 % de un núcleo a 30 FPS, dominada por el present del driver;
+  sin cambio medible. Herramientas: `cargo run --release -p particlewall-render
+  --example bench` (offscreen, timestamps) y `--example live` (superficie real).
+
 ### Pendiente del port
 
 - [ ] Verificación en el Mac físico: `swift test` + `build-app.sh` con el MSL
@@ -110,6 +142,11 @@ Rama de trabajo: `feature/linux-port`.
 - [ ] M5, remanente: documentación de operación y PKGBUILD (si se aprueba).
 - [ ] (Opcional) sincronizar en vivo las etiquetas de la ventana de ajustes tras
       un `--set-color` externo.
+- [ ] macOS: adoptar `vsIndexed` con `drawIndexedPrimitives` (el MSL ya lo
+      incluye) y medirlo con Instruments.
+- [ ] Linux: validar en vivo el daemon con superficies nativas, multi-monitor y
+      cambio de escala (el crate solo se verificó con `cargo check`; WebKitGTK 6
+      no estaba instalado).
 
 ## Estado general
 

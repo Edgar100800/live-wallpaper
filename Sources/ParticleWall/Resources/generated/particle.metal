@@ -473,7 +473,7 @@ ParticleSample particleSample(
     float d = 330.0;
     uint ringPointCount = 0u;
     metal::float2 p_2 = {};
-    ParticleSample out_2 = {};
+    ParticleSample out_1 = {};
     renderColor = u_1.appearance.xyz;
     float style = u_1.model.x;
     if (style < 0.5) {
@@ -618,15 +618,38 @@ ParticleSample particleSample(
         p_2.x = _e322 / metal::max(0.1, u_1.aspect);
     }
     metal::float2 _e326 = p_2;
-    out_2.clip = _e326;
+    out_1.clip = _e326;
     float _e329 = pointScale_2;
-    out_2.pointSizePx = metal::max(1.0, u_1.pointSize * _e329);
+    out_1.pointSizePx = metal::max(1.0, u_1.pointSize * _e329);
     float brightness = metal::max(0.05, u_1.appearance.w);
     metal::float3 _e338 = renderColor;
     float _e345 = trailAlpha;
-    out_2.color = metal::float4(_e338 * brightness, (1.0 - metal::exp(-0.55 * brightness)) * _e345);
-    ParticleSample _e348 = out_2;
+    out_1.color = metal::float4(_e338 * brightness, (1.0 - metal::exp(-0.55 * brightness)) * _e345);
+    ParticleSample _e348 = out_1;
     return _e348;
+}
+
+VertexOut quadCorner(
+    metal::float2 clip,
+    float pointSizePx,
+    metal::float4 color,
+    metal::float2 f_1,
+    constant Uniforms& u_2
+) {
+    VertexOut out_2 = {};
+    metal::float2 _e12 = u_2.viewport;
+    metal::float2 ndc = (((f_1 - metal::float2(0.5)) * 2.0) * pointSizePx) / _e12;
+    out_2.position = metal::float4(clip + ndc, 0.0, 1.0);
+    out_2.uv = f_1;
+    out_2.color = color;
+    VertexOut _e22 = out_2;
+    return _e22;
+}
+
+metal::float2 cornerOffset(
+    uint vi_3
+) {
+    return metal::float2(static_cast<float>(vi_3 & 1u), static_cast<float>(vi_3 >> 1u));
 }
 
 struct vsMainInput {
@@ -644,21 +667,37 @@ vertex vsMainOutput vsMain(
 , constant _mslBufferSizes& _buffer_sizes [[buffer(6)]]
 ) {
     type_8 offsets = type_8 {metal::float2(0.0, 0.0), metal::float2(1.0, 0.0), metal::float2(0.0, 1.0), metal::float2(0.0, 1.0), metal::float2(1.0, 0.0), metal::float2(1.0, 1.0)};
-    VertexOut out = {};
     uint corner_1 = naga_mod(vi, 6u);
     uint particleID_1 = naga_div(vi, 6u);
     Uniforms _e6 = u_2;
     ParticleSample _e7 = particleSample(particleID_1, _e6, flowParticles, flowHistory, _buffer_sizes);
-    metal::float2 _e29 = offsets.inner[corner_1];
-    metal::float2 f_1 = static_cast<metal::float2>(_e29);
-    metal::float2 _e40 = u_2.viewport;
-    metal::float2 ndc = (((f_1 - metal::float2(0.5)) * 2.0) * _e7.pointSizePx) / _e40;
-    out.position = metal::float4(_e7.clip + ndc, 0.0, 1.0);
-    out.uv = f_1;
-    out.color = _e7.color;
-    VertexOut _e52 = out;
-    const auto _tmp = _e52;
+    metal::float2 _e32 = offsets.inner[corner_1];
+    VertexOut _e33 = quadCorner(_e7.clip, _e7.pointSizePx, _e7.color, _e32, u_2);
+    const auto _tmp = _e33;
     return vsMainOutput { _tmp.position, _tmp.uv, _tmp.color };
+}
+
+
+struct vsIndexedInput {
+};
+struct vsIndexedOutput {
+    metal::float4 position [[position]];
+    metal::float2 uv [[user(loc0), center_perspective]];
+    metal::float4 color [[user(loc1), center_perspective]];
+};
+vertex vsIndexedOutput vsIndexed(
+  uint vi_1 [[vertex_id]]
+, constant Uniforms& u_2 [[buffer(0)]]
+, device type_4 const& flowParticles [[buffer(1)]]
+, device type_4 const& flowHistory [[buffer(2)]]
+, constant _mslBufferSizes& _buffer_sizes [[buffer(6)]]
+) {
+    Uniforms _e4 = u_2;
+    ParticleSample _e5 = particleSample(vi_1 >> 2u, _e4, flowParticles, flowHistory, _buffer_sizes);
+    metal::float2 _e11 = cornerOffset(vi_1 & 3u);
+    VertexOut _e12 = quadCorner(_e5.clip, _e5.pointSizePx, _e5.color, _e11, u_2);
+    const auto _tmp = _e12;
+    return vsIndexedOutput { _tmp.position, _tmp.uv, _tmp.color };
 }
 
 
@@ -667,13 +706,13 @@ struct fsMainInput {
     metal::float4 color [[user(loc1), center_perspective]];
 };
 struct fsMainOutput {
-    metal::float4 member_1 [[color(0)]];
+    metal::float4 member_2 [[color(0)]];
 };
 fragment fsMainOutput fsMain(
-  fsMainInput varyings_1 [[stage_in]]
+  fsMainInput varyings_2 [[stage_in]]
 , metal::float4 position [[position]]
 ) {
-    const VertexOut in = { position, varyings_1.uv, {}, varyings_1.color };
+    const VertexOut in = { position, varyings_2.uv, {}, varyings_2.color };
     metal::float2 centered_1 = (in.uv * 2.0) - metal::float2(1.0);
     float alpha = metal::smoothstep(1.0, 0.15, metal::length(centered_1)) * in.color.w;
     return fsMainOutput { metal::float4(in.color.xyz, alpha) };
@@ -932,18 +971,18 @@ struct vsLineOutput {
     metal::float4 color [[user(loc0), center_perspective]];
 };
 vertex vsLineOutput vsLine(
-  uint vi_1 [[vertex_id]]
+  uint vi_2 [[vertex_id]]
 , constant Uniforms& u_2 [[buffer(0)]]
 , device type_4 const& graphEdgesRo [[buffer(3)]]
 , constant _mslBufferSizes& _buffer_sizes [[buffer(6)]]
 ) {
-    LineOut out_1 = {};
-    metal::float4 edge_1 = graphEdgesRo[vi_1];
-    out_1.position = metal::float4(edge_1.xy, 0.0, 1.0);
+    LineOut out = {};
+    metal::float4 edge_1 = graphEdgesRo[vi_2];
+    out.position = metal::float4(edge_1.xy, 0.0, 1.0);
     metal::float4 _e13 = u_2.appearance;
     float _e18 = u_2.appearance.w;
-    out_1.color = metal::float4(_e13.xyz * metal::max(0.05, _e18), edge_1.z);
-    LineOut _e24 = out_1;
+    out.color = metal::float4(_e13.xyz * metal::max(0.05, _e18), edge_1.z);
+    LineOut _e24 = out;
     const auto _tmp = _e24;
     return vsLineOutput { _tmp.position, _tmp.color };
 }
@@ -953,12 +992,12 @@ struct fsLineInput {
     metal::float4 color [[user(loc0), center_perspective]];
 };
 struct fsLineOutput {
-    metal::float4 member_6 [[color(0)]];
+    metal::float4 member_7 [[color(0)]];
 };
 fragment fsLineOutput fsLine(
-  fsLineInput varyings_6 [[stage_in]]
+  fsLineInput varyings_7 [[stage_in]]
 , metal::float4 position_1 [[position]]
 ) {
-    const LineOut in_1 = { position_1, varyings_6.color };
+    const LineOut in_1 = { position_1, varyings_7.color };
     return fsLineOutput { in_1.color };
 }

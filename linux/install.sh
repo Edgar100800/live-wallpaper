@@ -14,13 +14,14 @@ cargo build --release --manifest-path "$DIR/Cargo.toml" -p particlewall-linux
 cargo build --release --manifest-path "$DIR/../tools/ascii-converter/Cargo.toml"
 cp "$DIR/../tools/ascii-converter/target/release/particlewall-ascii-converter" "$DIR/target/release/"
 
+BIN_PATH="$DIR/target/release/particlewall"
+
 echo "==> installing systemd unit"
 UNIT_DIR="$HOME/.config/systemd/user"
 mkdir -p "$UNIT_DIR"
-sed "s|%h|$HOME|" "$DIR/particlewall.service" > "$UNIT_DIR/particlewall.service"
+sed "s|@BIN@|$BIN_PATH|" "$DIR/particlewall.service" > "$UNIT_DIR/particlewall.service"
 
 echo "==> installing desktop entry + icon"
-BIN_PATH="$DIR/target/release/particlewall"
 APP_DIR="$HOME/.local/share/applications"
 ICON_DIR="$HOME/.local/share/icons/hicolor/512x512/apps"
 mkdir -p "$APP_DIR" "$ICON_DIR"
@@ -29,7 +30,7 @@ cp "$DIR/assets/icon.png" "$ICON_DIR/particlewall.png"
 gtk-update-icon-cache -f "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 
 echo "==> stopping manual instances"
-pkill -f "$HOME/Projects/live-wallpaper/linux/target/release/particlewall" 2>/dev/null || true
+pkill -f "$BIN_PATH" 2>/dev/null || true
 
 systemctl --user daemon-reload
 systemctl --user enable --now particlewall.service

@@ -131,6 +131,76 @@ del origen cuando la clase exportada expone `.camera`; respeta pausa y FPS cap. 
 wallpapers es-module existentes se regeneran automáticamente al arrancar (upgrade
 idempotente de su index.html).
 
+## Linux (Omarchy / Hyprland)
+
+El daemon Linux vive en `linux/` (Rust, GTK4, gtk4-layer-shell, WebKitGTK 6 y wgpu).
+Los fondos GPU comparten el mismo WGSL que macOS
+(`shared/backgrounds/engines/particle-v1/particle.wgsl`); los fondos HTML y ASCII
+usan WebKitGTK.
+
+### Instalar
+
+```bash
+sudo pacman -S --needed webkitgtk-6.0 gtk4 gtk4-layer-shell rustup
+rustup default stable
+./linux/install.sh
+```
+
+`install.sh` compila en release, instala la unidad `systemd --user`
+(`particlewall.service`, ligada a `graphical-session.target`), la entrada del
+launcher y el icono, y arranca el daemon. Las rutas apuntan al checkout desde el
+que se ejecuta.
+
+### Uso
+
+- **Launcher**: busca *ParticleWall* en el menú de aplicaciones (o
+  `particlewall --app`). Arranca el daemon si hace falta y abre la ventana de
+  ajustes: pestañas *Fondo* (fondo, pausa y FPS), *Partículas* (colores, tamaño,
+  brillo y perfiles), *Video ASCII* e *Importar video*. Los cambios se ven en
+  vivo y se conservan con *Guardar cambios*.
+- **Bandeja**: el icono del panel ofrece fondos, configuración, pausa, límite de
+  FPS, perfiles, tamaño e intensidad.
+- **CLI** (con el daemon en marcha):
+
+  ```bash
+  particlewall --list                      # fondos disponibles
+  particlewall --apply NebulaWallpaper     # aplicar por ID o nombre
+  particlewall --set-color background=#0a0a1a --set-color particle=#7ee0c0
+  particlewall --fps 30                    # 0 = sin límite
+  particlewall --pause | --resume | --toggle
+  particlewall --status                    # estado en JSON
+  ```
+
+La superficie se mapea en la capa Bottom: por encima del fondo estático de
+Omarchy y por debajo de ventanas y barra. Pantalla completa, bloqueo y suspensión
+pausan el render.
+
+### Consumo GPU/CPU
+
+- Resolución nativa en salidas con escala fraccional (`wp_fractional_scale_v1` +
+  `wp_viewporter`): una pantalla 2560×1440 a 1,25× renderiza 2560×1440, no 4096×2304.
+- Un device wgpu, shader y pipelines compartidos por todas las pantallas; dos
+  imágenes de swapchain por salida.
+- Quads indexados: `particleSample` corre 4 veces por partícula en vez de 6.
+- En pausa el bucle despierta a 4 Hz en lugar de al límite de FPS.
+
+Medido en una RTX 3060 Ti a 2560×1440 y 30 FPS: ~47 MiB de VRAM por pantalla,
+~0,9 % de un núcleo de CPU y menos del 2 % del tiempo de GPU con el fondo más
+pesado (Nebulosa). El límite de FPS es el ajuste con más impacto: el compositor
+recompone la pantalla en cada frame del fondo.
+
+Mediciones reproducibles:
+
+```bash
+cd linux
+cargo run --release -p particlewall-render --example bench   # GPU offscreen por fondo
+cargo run --release -p particlewall-render --example live    # superficie real, CPU por frame
+cargo test --release -p particlewall-render -- --test-threads=1
+```
+
+Las pruebas de render corren con `--test-threads=1`: varios contextos GPU en
+paralelo cuelgan el driver NVIDIA.
+
 ## Arquitectura
 
 ```

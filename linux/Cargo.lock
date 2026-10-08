@@ -1283,6 +1283,7 @@ dependencies = [
  "serde_json",
  "toml",
  "wayland-client",
+ "wayland-protocols",
  "wayland-protocols-wlr",
  "webkit6",
  "zbus",
@@ -1297,6 +1298,9 @@ dependencies = [
  "raw-window-handle",
  "serde",
  "serde_json",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
  "wgpu",
 ]
 

@@ -156,6 +156,8 @@ mod gpu {
         pub model: u32,
         pub presenter: GpuPresenter,
         pub size_px: (f32, f32),
+        /// Native/integer-scale buffer ratio (GpuLayerSurface::point_scale).
+        pub point_scale: f32,
         /// Keepalive for the dedicated Wayland surface feeding `presenter`.
         /// Declared after the presenter so raw pointers are dropped first.
         #[allow(dead_code)]
@@ -172,6 +174,8 @@ mod gpu {
         pub parked: Vec<GpuOutput>,
         /// Dedicated Wayland connection, created once per process.
         pub wl: Option<Rc<wayland::WaylandGpu>>,
+        /// One wgpu device + pipelines shared by every output's presenter.
+        pub ctx: Option<Rc<particlewall_render::gpu::GpuContext>>,
         pub wallpaper: String,
         pub animation_time: f32,
         pub last_tick: Option<Instant>,
@@ -206,7 +210,9 @@ mod gpu {
             let mut u = Uniforms::defaults(aspect, [out.size_px.0, out.size_px.1]);
             u.time = self.animation_time;
             // Swift: max(1.25, min(3, scale * 1.25)) * particleSize, scale = 1 here.
-            u.point_size = 1.25f32.clamp(1.25, 3.0) * self.particle_size;
+            // point_scale keeps the on-screen size of the former integer-scale
+            // buffers now that fractional outputs render at native size.
+            u.point_size = 1.25f32.clamp(1.25, 3.0) * self.particle_size * out.point_scale;
             u.appearance = [
                 self.particle[0],
                 self.particle[1],
@@ -346,7 +352,11 @@ fn switch_renderer(
                 }
                 let built = wl.create_surface(&name).and_then(|session| {
                     let size = session.size_px;
-                    gpu::GpuPresenter::new(session.handles(), size, model)
+                    let mut shared_ctx = gpu_rt.borrow().ctx.clone();
+                    let presenter =
+                        gpu::GpuPresenter::new(&mut shared_ctx, session.handles(), size, model);
+                    gpu_rt.borrow_mut().ctx = shared_ctx;
+                    presenter
                         .map(|presenter| (session, presenter))
                         .map_err(|e| e.to_string())
                 });
@@ -358,6 +368,7 @@ fn switch_renderer(
                             model,
                             presenter,
                             size_px: (session.size_px.0 as f32, session.size_px.1 as f32),
+                            point_scale: session.point_scale,
                             session,
                         });
                     }
@@ -502,10 +513,16 @@ fn start_gpu_loop(
     gpu_rt: Rc<RefCell<gpu::GpuRuntime>>,
 ) {
     fn schedule(state: Rc<RefCell<control::DaemonState>>, gpu_rt: Rc<RefCell<gpu::GpuRuntime>>) {
-        let fps = state.borrow().flags.fps_cap.load(std::sync::atomic::Ordering::Relaxed);
+        let (fps, paused) = {
+            let st = state.borrow();
+            (st.flags.fps_cap.load(std::sync::atomic::Ordering::Relaxed), st.flags.effective_paused())
+        };
         // Unlimited uses the existing ~60 Hz cadence. Configured caps schedule
         // submissions directly instead of waking at 16 ms and ignoring the cap.
-        let interval = std::time::Duration::from_secs_f64(1.0 / if fps == 0 { 60.0 } else { fps as f64 });
+        // While paused (user, fullscreen app, lock) nothing is drawn, so only
+        // poll for the resume at 4 Hz instead of waking at the FPS cap.
+        let rate = if paused { 4.0 } else if fps == 0 { 60.0 } else { fps as f64 };
+        let interval = std::time::Duration::from_secs_f64(1.0 / rate);
         glib::timeout_add_local_once(interval, move || {
             let paused = state.borrow().flags.effective_paused();
             gpu_rt.borrow_mut().tick(paused);

@@ -78,13 +78,11 @@ impl Uniforms {
     }
 }
 
-/// Path to the shared engine WGSL, relative to this crate.
-pub fn engine_wgsl_path() -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../shared/backgrounds/engines/particle-v1/particle.wgsl")
-}
+/// Shared engine WGSL, embedded at build time so installed binaries do not
+/// depend on the source checkout.
+pub const ENGINE_WGSL: &str =
+    include_str!("../../../../shared/backgrounds/engines/particle-v1/particle.wgsl");
 
 pub fn engine_wgsl() -> String {
-    std::fs::read_to_string(engine_wgsl_path())
-        .expect("shared particle-v1 WGSL present")
+    ENGINE_WGSL.to_string()
 }

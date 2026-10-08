@@ -23,8 +23,9 @@ const NAGA_VERSION: &str = "25.0.1";
 const MSL_LANG_VERSION: (u8, u8) = (2, 0);
 
 /// All engine entry points; each needs the binding map applied.
-const ENTRY_POINTS: [&str; 7] = [
+const ENTRY_POINTS: [&str; 8] = [
     "vsMain",
+    "vsIndexed",
     "fsMain",
     "flowUpdate",
     "graphPositionUpdate",

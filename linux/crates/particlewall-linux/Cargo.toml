@@ -34,9 +34,10 @@ zbus = { version = "5", optional = true, default-features = false, features = ["
 serde = { version = "1.0.229", features = ["derive"] }
 wayland-client = { version = "0.31", optional = true, features = ["system", "dlopen"] }
 wayland-protocols-wlr = { version = "0.3", optional = true, features = ["client"] }
+wayland-protocols = { version = "0.32", optional = true, features = ["client", "staging"] }
 
 [features]
 default = ["web", "gpu", "power"]
 web = ["dep:webkit6", "dep:gdk4-wayland"]
 power = ["dep:zbus"]
-gpu = ["dep:particlewall-render", "dep:gdk4-wayland", "dep:wayland-client", "dep:wayland-protocols-wlr"]
+gpu = ["dep:particlewall-render", "dep:gdk4-wayland", "dep:wayland-client", "dep:wayland-protocols-wlr", "dep:wayland-protocols"]
