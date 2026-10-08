@@ -72,6 +72,18 @@ fn gpu_model_for(wallpaper_id: &str) -> Option<u32> {
     })
 }
 
+/// How the GPU runtime renders `wallpaper_id`, if it can: a particle-v1
+/// model or a native ascii-video-v1 clip. Everything else needs WebKit.
+#[cfg(feature = "gpu")]
+fn native_wallpaper(wallpaper_id: &str) -> Option<gpu::Native> {
+    if let Some(model) = gpu_model_for(wallpaper_id) {
+        return Some(gpu::Native::Particles(model));
+    }
+    library::find(wallpaper_id)
+        .and_then(|wp| library::ascii_clip_dir(&wp))
+        .map(gpu::Native::Ascii)
+}
+
 #[cfg(feature = "webkit")]
 /// Repo-relative location of the shared JS contract scripts.
 fn shared_script(name: &str) -> String {
@@ -160,13 +172,39 @@ fn install_navigation_policy(webview: &WebView, root: &std::path::Path) {
 mod gpu {
     use super::*;
     pub(crate) use particlewall_render::gpu::GpuPresenter;
+    use particlewall_render::ascii::{AsciiPalette, AsciiPlayer, AsciiStyle};
+    use particlewall_render::gpu::{GpuContext, ParticleRenderer, VertexPath};
     use particlewall_render::Uniforms;
+
+    /// A wallpaper the GPU runtime renders without WebKit.
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum Native {
+        /// Shared particle-v1 model index.
+        Particles(u32),
+        /// ascii-video-v1 clip directory.
+        Ascii(std::path::PathBuf),
+    }
+
+    pub enum Scene {
+        Particles(ParticleRenderer),
+        Ascii(AsciiPlayer),
+    }
+
+    impl Scene {
+        pub fn new(ctx: &Rc<GpuContext>, format: particlewall_render::wgpu::TextureFormat, native: &Native) -> Result<Self, String> {
+            Ok(match native {
+                Native::Particles(model) => {
+                    Scene::Particles(ParticleRenderer::new(ctx, format, *model, VertexPath::Indexed4))
+                }
+                Native::Ascii(dir) => Scene::Ascii(AsciiPlayer::new(ctx, format, dir)?),
+            })
+        }
+    }
 
     pub struct GpuOutput {
         pub id: String,
-        /// Shared particle-v1 model index (0..8).
-        pub model: u32,
         pub presenter: GpuPresenter,
+        pub scene: Scene,
         pub size_px: (f32, f32),
         /// Native/integer-scale buffer ratio (GpuLayerSurface::point_scale).
         pub point_scale: f32,
@@ -174,6 +212,23 @@ mod gpu {
         /// Declared after the presenter so raw pointers are dropped first.
         #[allow(dead_code)]
         pub session: crate::web::wayland::GpuLayerSurface,
+    }
+
+    impl GpuOutput {
+        /// Points this output at `native` without touching its swapchain:
+        /// particle models switch in place, an ASCII clip keeps playing when
+        /// it is already shown, anything else gets a new scene.
+        pub fn show(&mut self, native: &Native) -> Result<(), String> {
+            match (native, &mut self.scene) {
+                (Native::Particles(model), Scene::Particles(renderer)) => renderer.set_model(*model),
+                (Native::Ascii(dir), Scene::Ascii(player)) if player.dir() == dir => {}
+                _ => {
+                    let ctx = self.presenter.context().clone();
+                    self.scene = Scene::new(&ctx, self.presenter.format(), native)?;
+                }
+            }
+            Ok(())
+        }
     }
 
     #[derive(Default)]
@@ -187,7 +242,7 @@ mod gpu {
         /// Dedicated Wayland connection, created once per process.
         pub wl: Option<Rc<wayland::WaylandGpu>>,
         /// One wgpu device + pipelines shared by every output's presenter.
-        pub ctx: Option<Rc<particlewall_render::gpu::GpuContext>>,
+        pub ctx: Option<Rc<GpuContext>>,
         pub wallpaper: String,
         pub animation_time: f32,
         pub last_tick: Option<Instant>,
@@ -197,6 +252,12 @@ mod gpu {
         pub particle_size: f32,
         pub speed: f32,
         pub loop_running: bool,
+        /// Omarchy theme palette, refreshed by the palette watcher.
+        pub palette: Option<AsciiPalette>,
+        /// ASCII presentation used for the last frame.
+        pub ascii_style: Option<AsciiStyle>,
+        /// Something visible changed: draw once even while paused.
+        pub dirty: bool,
     }
 
     impl GpuRuntime {
@@ -216,9 +277,11 @@ mod gpu {
             if let Some(w) = colors.brightness {
                 self.brightness = (w as f32).clamp(0.25, 10.0);
             }
+            self.dirty = true;
         }
 
-        fn uniforms_for(&self, out: &GpuOutput, aspect: f32) -> Uniforms {
+        fn uniforms_for(&self, out: &GpuOutput, renderer: &ParticleRenderer) -> Uniforms {
+            let aspect = out.size_px.0 / out.size_px.1.max(1.0);
             let mut u = Uniforms::defaults(aspect, [out.size_px.0, out.size_px.1]);
             u.time = self.animation_time;
             // Swift: max(1.25, min(3, scale * 1.25)) * particleSize, scale = 1 here.
@@ -231,34 +294,61 @@ mod gpu {
                 self.particle[2],
                 self.brightness,
             ];
+            let model = renderer.model();
             u.model = [
-                out.model as f32,
-                out.presenter.latest_flow_slot(),
+                model as f32,
+                renderer.latest_flow_slot(),
                 12.0,
-                Uniforms::model_vertex_count(out.model) as f32,
+                Uniforms::model_vertex_count(model) as f32,
             ];
             u
         }
 
-        pub fn tick(&mut self, paused: bool) {
+        /// Draws one frame on every output. While paused nothing advances and
+        /// the last frame stays on screen, except that appearance, palette or
+        /// wallpaper changes repaint it once.
+        pub fn tick(&mut self, paused: bool, ascii: &library::ASCIISettings) {
+            let style = AsciiStyle {
+                palette: (ascii.color_mode == library::ASCIIColorMode::Omarchy)
+                    .then_some(self.palette)
+                    .flatten(),
+                clean_background: ascii.clean_background,
+                separation: ascii.separation as f32,
+            };
+            if self.ascii_style != Some(style) {
+                self.ascii_style = Some(style);
+                self.dirty = true;
+            }
             let now = Instant::now();
             let delta = self
                 .last_tick
                 .map(|l| (now - l).as_secs_f32().min(0.1))
                 .unwrap_or(0.0);
             self.last_tick = Some(now);
-            if paused || self.outputs.is_empty() {
-                return; // last frame stays on screen
+            if self.outputs.is_empty() || (paused && !self.dirty) {
+                return;
             }
+            let delta = if paused { 0.0 } else { delta };
+            self.dirty = false;
             self.animation_time += delta * self.speed;
-            let n = self.outputs.len();
-            for i in 0..n {
-                let (u, background) = {
-                    let out = &self.outputs[i];
-                    let aspect = out.size_px.0 / out.size_px.1.max(1.0);
-                    (self.uniforms_for(out, aspect), self.background)
+            let (background, scaled) = (self.background, delta * self.speed);
+            for i in 0..self.outputs.len() {
+                let uniforms = match &self.outputs[i].scene {
+                    Scene::Particles(renderer) => Some(self.uniforms_for(&self.outputs[i], renderer)),
+                    Scene::Ascii(_) => None,
                 };
-                self.outputs[i].presenter.render(&u, background, delta * self.speed);
+                let GpuOutput { presenter, scene, .. } = &mut self.outputs[i];
+                let size = presenter.size();
+                presenter.present(|encoder, view| match scene {
+                    Scene::Particles(renderer) => {
+                        renderer.encode(encoder, view, uniforms.as_ref().unwrap(), background, scaled)
+                    }
+                    // Clip time follows wall time, not the particle speed.
+                    Scene::Ascii(player) => {
+                        player.advance(delta);
+                        player.encode(encoder, view, size, &style);
+                    }
+                });
             }
         }
     }
@@ -285,7 +375,9 @@ fn switch_renderer(
     wallpaper_id: &str,
 ) -> String {
     #[cfg(feature = "gpu")]
-    let gpu_capable = gpu_model_for(wallpaper_id).is_some();
+    let native = native_wallpaper(wallpaper_id);
+    #[cfg(feature = "gpu")]
+    let gpu_capable = native.is_some();
 
     #[cfg(not(feature = "gpu"))]
     let gpu_capable = false;
@@ -326,7 +418,7 @@ fn switch_renderer(
             },
         };
 
-        let model = gpu_model_for(wallpaper_id).unwrap_or(0);
+        let native = native.expect("gpu_capable");
         let mut outputs: Vec<gpu::GpuOutput> = Vec::new();
         let mut gpu_err: Option<String> = None;
         if let Some(wl) = wl {
@@ -334,36 +426,24 @@ fn switch_renderer(
                 // Presenters are permanent per-output resources (the NVIDIA
                 // Wayland WSI cannot host a second swapchain on the same
                 // connection). Reuse an active presenter first, then a
-                // parked one, reconfiguring its model in place; only build
-                // brand-new surfaces when none exists for this output.
+                // parked one, pointing its scene at the new wallpaper; only
+                // build brand-new surfaces when none exists for this output.
                 let active = {
                     let mut rt = gpu_rt.borrow_mut();
-                    rt.outputs.iter().position(|p| p.id == name).map(|idx| rt.outputs.remove(idx))
+                    rt.outputs.iter().position(|p| p.id == name).map(|idx| (rt.outputs.remove(idx), "reconfigured"))
                 };
-                let reused = match active {
-                    Some(mut out) => {
-                        if out.model != model {
-                            out.presenter.set_model(model);
-                            out.model = model;
-                        }
-                        println!("pw: GPU renderer reconfigured on {name}");
-                        Some(out)
+                let reused = active.or_else(|| {
+                    let mut rt = gpu_rt.borrow_mut();
+                    rt.parked.iter().position(|p| p.id == name).map(|idx| (rt.parked.remove(idx), "resumed"))
+                });
+                if let Some((mut out, how)) = reused {
+                    if let Err(e) = out.show(&native) {
+                        eprintln!("pw: {wallpaper_id} unavailable on {name} ({e})");
+                        gpu_rt.borrow_mut().parked.push(out);
+                        gpu_err = Some(e);
+                        break;
                     }
-                    None => {
-                        let parked_idx =
-                            gpu_rt.borrow().parked.iter().position(|p| p.id == name);
-                        parked_idx.map(|idx| {
-                            let mut out = gpu_rt.borrow_mut().parked.remove(idx);
-                            if out.model != model {
-                                out.presenter.set_model(model);
-                                out.model = model;
-                            }
-                            println!("pw: GPU renderer resumed on {name}");
-                            out
-                        })
-                    }
-                };
-                if let Some(out) = reused {
+                    println!("pw: GPU renderer {how} on {name}");
                     outputs.push(out);
                     continue;
                 }
@@ -371,22 +451,23 @@ fn switch_renderer(
                     let size = session.size_px;
                     let mut shared_ctx = gpu_rt.borrow().ctx.clone();
                     let presenter =
-                        gpu::GpuPresenter::new(&mut shared_ctx, session.handles(), size, model);
+                        gpu::GpuPresenter::new(&mut shared_ctx, session.handles(), size)
+                            .map_err(|e| e.to_string());
                     gpu_rt.borrow_mut().ctx = shared_ctx;
-                    presenter
-                        .map(|presenter| (session, presenter))
-                        .map_err(|e| e.to_string())
+                    let presenter = presenter?;
+                    let scene = gpu::Scene::new(presenter.context(), presenter.format(), &native)?;
+                    Ok((session, presenter, scene))
                 });
                 match built {
-                    Ok((session, presenter)) => {
+                    Ok((session, presenter, scene)) => {
                         println!(
                             "pw: GPU renderer on {name} ({}x{} px)",
                             session.size_px.0, session.size_px.1
                         );
                         outputs.push(gpu::GpuOutput {
                             id: name.clone(),
-                            model,
                             presenter,
+                            scene,
                             size_px: (session.size_px.0 as f32, session.size_px.1 as f32),
                             point_scale: session.point_scale,
                             session,
@@ -411,6 +492,7 @@ fn switch_renderer(
             rt.outputs = outputs;
             rt.wallpaper = wallpaper_id.to_string();
             rt.last_tick = None;
+            rt.dirty = true;
             if !rt.loop_running {
                 rt.loop_running = true;
                 start_gpu_loop(state.clone(), gpu_rt.clone());
@@ -560,8 +642,11 @@ fn start_gpu_loop(
         let rate = if paused { 4.0 } else if fps == 0 { 60.0 } else { fps as f64 };
         let interval = std::time::Duration::from_secs_f64(1.0 / rate);
         glib::timeout_add_local_once(interval, move || {
-            let paused = state.borrow().flags.effective_paused();
-            gpu_rt.borrow_mut().tick(paused);
+            let (paused, ascii) = {
+                let st = state.borrow();
+                (st.flags.effective_paused(), st.ascii_settings(&st.wallpaper))
+            };
+            gpu_rt.borrow_mut().tick(paused, &ascii);
             if gpu_rt.borrow().outputs.is_empty() {
                 gpu_rt.borrow_mut().loop_running = false;
             } else {
@@ -627,6 +712,7 @@ pub fn run() {
             particle_size: cfg.colors.size.unwrap_or(1.6) as f32,
             brightness: cfg.colors.brightness.unwrap_or(1.5) as f32,
             speed: 1.0,
+            palette: omarchy_palette::read().map(|p| p.to_ascii()),
             ..Default::default()
         }));
 
@@ -756,6 +842,8 @@ pub fn run() {
         // no retained WebView references, and no work for unchanged colors.
         {
             let st = Rc::downgrade(&state);
+            #[cfg(feature = "gpu")]
+            let rt = Rc::downgrade(&gpu_rt);
             let mut previous = omarchy_palette::read();
             glib::timeout_add_seconds_local(2, move || {
                 let Some(st) = st.upgrade() else { return glib::ControlFlow::Break };
@@ -763,6 +851,11 @@ pub fn run() {
                 // A theme switch can briefly remove the file; keep the last palette.
                 if next.is_some() && next != previous {
                     st.borrow().eval_js(&omarchy_palette::script(next.as_ref()));
+                    // Native ASCII wallpapers repaint on the next tick, paused or not.
+                    #[cfg(feature = "gpu")]
+                    if let Some(rt) = rt.upgrade() {
+                        rt.borrow_mut().palette = next.as_ref().map(|p| p.to_ascii());
+                    }
                     previous = next;
                 }
                 glib::ControlFlow::Continue

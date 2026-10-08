@@ -4,6 +4,10 @@
 //! numeric contract via fixtures in shared/contracts/fixtures/renderer-vectors.
 //! The GPU path renders the shared WGSL through wgpu (Vulkan on Linux).
 
+/// Re-exported so hosts name wgpu types without pinning their own version.
+pub use wgpu;
+
+pub mod ascii;
 pub mod cpu;
 pub mod gpu;
 

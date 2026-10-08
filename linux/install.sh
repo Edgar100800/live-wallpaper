@@ -3,13 +3,14 @@
 #   1. release build
 #   2. systemd --user unit + enable (graphical-session.target)
 # Requires: gtk4, gtk4-layer-shell, rustup/cargo. webkitgtk-6.0 is optional:
-# without it (or with --gpu-only) only the GPU wallpapers are built.
+# particle and ASCII-video wallpapers render with wgpu; WebKit only adds the
+# HTML fallback. Without it (or with --gpu-only) the daemon builds without it.
 set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 FEATURES=""
 if [ "$1" = "--gpu-only" ] || ! pkg-config --exists webkitgtk-6.0; then
-    echo "==> GPU-only build (no WebKitGTK: HTML and ASCII-video wallpapers disabled)"
+    echo "==> GPU-only build (no WebKitGTK: HTML wallpaper fallback disabled)"
     FEATURES="--no-default-features --features gpu,power"
 fi
 
@@ -19,10 +20,8 @@ echo "==> building (release)"
 # shellcheck disable=SC2086 # FEATURES is a word list
 cargo build --release --manifest-path "$DIR/Cargo.toml" -p particlewall-linux $FEATURES
 
-if [ -z "$FEATURES" ]; then
-    cargo build --release --manifest-path "$DIR/../tools/ascii-converter/Cargo.toml"
-    cp "$DIR/../tools/ascii-converter/target/release/particlewall-ascii-converter" "$DIR/target/release/"
-fi
+cargo build --release --manifest-path "$DIR/../tools/ascii-converter/Cargo.toml"
+cp "$DIR/../tools/ascii-converter/target/release/particlewall-ascii-converter" "$DIR/target/release/"
 
 BIN_PATH="$DIR/target/release/particlewall"
 

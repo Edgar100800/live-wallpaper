@@ -2,7 +2,9 @@
 //! (like the daemon), renders a model through `GpuPresenter` on a timer at
 //! the FPS cap for a few seconds, and reports CPU time per frame.
 //!
-//!   cargo run --release -p particlewall-render --example live -- [model] [seconds] [fps] [native|integer]
+//!   cargo run --release -p particlewall-render --example live -- [model|ascii[:dir]] [seconds] [fps] [native|integer]
+//!
+//! `ascii` plays the bundled Spider-Man clip (or `dir`) through AsciiPlayer.
 //!
 //! `native` (default) sizes the buffer from wp_fractional_scale_v1 and maps
 //! it with wp_viewporter; `integer` reproduces the old path (integer
@@ -13,7 +15,8 @@
 
 use std::time::{Duration, Instant};
 
-use particlewall_render::gpu::{GpuPresenter, WaylandHandles};
+use particlewall_render::ascii::{AsciiPlayer, AsciiStyle};
+use particlewall_render::gpu::{GpuPresenter, ParticleRenderer, VertexPath, WaylandHandles};
 use particlewall_render::Uniforms;
 use wayland_client::protocol::{wl_compositor, wl_output, wl_registry, wl_surface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
@@ -117,7 +120,14 @@ fn process_cpu_ns() -> u64 {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let model: u32 = args.next().map(|a| a.parse().unwrap()).unwrap_or(10);
+    let scene = args.next().unwrap_or_else(|| "10".into());
+    let ascii_dir = scene.strip_prefix("ascii").map(|rest| {
+        rest.strip_prefix(':').map(std::path::PathBuf::from).unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../Sources/ParticleWall/Resources/SpiderManASCIIWallpaper")
+        })
+    });
+    let model: u32 = if ascii_dir.is_some() { 0 } else { scene.parse().unwrap() };
     let seconds: f64 = args.next().map(|a| a.parse().unwrap()).unwrap_or(8.0);
     let fps: f64 = args.next().map(|a| a.parse().unwrap()).unwrap_or(30.0);
     let native = args.next().as_deref() != Some("integer");
@@ -175,12 +185,16 @@ fn main() {
         surface: surface.id().as_ptr().cast(),
     };
     let mut shared = None;
-    let mut presenter = GpuPresenter::new(&mut shared, handles, size, model).expect("presenter");
+    let mut presenter = GpuPresenter::new(&mut shared, handles, size).expect("presenter");
+    let ctx = presenter.context().clone();
+    let mut particles = ParticleRenderer::new(&ctx, presenter.format(), model, VertexPath::Indexed4);
+    let mut ascii = ascii_dir.map(|dir| AsciiPlayer::new(&ctx, presenter.format(), &dir).expect("ASCII clip"));
     println!(
-        "live: {}x{} model {model} at {fps} fps for {seconds} s on {}",
+        "live: {}x{} {} at {fps} fps for {seconds} s on {}",
         size.0,
         size.1,
-        shared.as_ref().unwrap().adapter_info().name
+        if ascii.is_some() { "ascii".to_string() } else { format!("model {model}") },
+        ctx.adapter_info().name
     );
 
     let mut u = Uniforms::defaults(size.0 as f32 / size.1 as f32, [size.0 as f32, size.1 as f32]);
@@ -196,9 +210,15 @@ fn main() {
         let delta = (now - last).as_secs_f32().min(0.1);
         last = now;
         u.time += delta;
-        u.model = [model as f32, presenter.latest_flow_slot(), 12.0, Uniforms::model_vertex_count(model) as f32];
+        u.model = [model as f32, particles.latest_flow_slot(), 12.0, Uniforms::model_vertex_count(model) as f32];
         let t = Instant::now();
-        presenter.render(&u, [0.02, 0.03, 0.08, 1.0], delta);
+        presenter.present(|encoder, view| match &mut ascii {
+            Some(player) => {
+                player.advance(delta);
+                player.encode(encoder, view, size, &AsciiStyle::default());
+            }
+            None => particles.encode(encoder, view, &u, [0.02, 0.03, 0.08, 1.0], delta),
+        });
         render_ns += t.elapsed().as_nanos();
         frames += 1;
         queue.dispatch_pending(&mut state).unwrap();
@@ -214,7 +234,7 @@ fn main() {
         cpu / frames as f64 * 1e6,
         render_ns as f64 / frames as f64 / 1e3,
     );
-    drop(presenter);
+    drop((ascii, particles, presenter));
     layer.destroy();
     surface.destroy();
     conn.flush().ok();

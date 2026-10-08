@@ -114,17 +114,49 @@ Manifest renderer value is `ascii-video`. Existing manifest v1 remains readable.
 
 Assets originate from AcerolaFX, which is MIT licensed. Keep the AcerolaFX copyright and license notice when redistributing those assets.
 
-## Omarchy palette and visual separation (Linux HTML fallback)
+## Linux wgpu renderer
 
-The bundled SpiderMan ASCII wallpaper uses WebKitGTK on Linux. The daemon reads
+`particlewall-render::ascii` plays ascii-video-v1 clips without WebKit.
+`shared/backgrounds/engines/ascii-video-v1/ascii.wgsl` is a direct port of the
+WebGL2 shader in `SpiderManASCIIWallpaper/index.html`, including its atlas
+sampling (nearest texel at `local * 8 + 0.5` after `UNPACK_FLIP_Y`). One
+full-screen triangle per frame; the cell grid stretches over the output like
+the WebGL canvas.
+
+- `AsciiClip` reads both layouts: bundled `clip.asciivideo` and imported
+  `stream.json` + `frames/<n>.bin`, with the same validation limits as the
+  WebGL player. It reads only the current frame (`pread`), so memory does not
+  grow with clip length.
+- `AsciiPlayer` advances clip time with wall time (delta clamped to 0.1 s, no
+  speed multiplier), reads and uploads cells only when the clip frame changes,
+  and keeps the last good frame on read errors.
+- The daemon prefers this renderer over WebKit for every wallpaper with a native
+  clip; the WebKit page stays as the fallback when the GPU path is unavailable.
+  Pause stops clip time; palette, ASCII settings and wallpaper changes repaint a
+  paused frame once.
+
+Parity: the `ascii` tests compare every pixel of synthetic and bundled frames
+against a CPU transcription of the WebGL shader in all four color/cleanup
+combinations. Checked once against the real page in Chromium (WebGL2 on
+SwiftShader, canvas exported with `toDataURL`) at 2560x1440: original colors
+100% identical, Omarchy palette with cleanup 99.86% identical and the rest within
+1/255. Resolutions with an integer number of pixels per cell (1920x1080 for a
+240x135 grid) put every pixel center on an atlas texel boundary, where WebGL and
+wgpu may round to different texels; avoid them for parity checks.
+
+## Omarchy palette and visual separation
+
+On Linux the daemon reads
 `$XDG_STATE_HOME/omarchy/current/theme/colors.toml` (default
 `~/.local/state/omarchy/current/theme/colors.toml`), with the older config-directory
-location as fallback. It injects `window.__pwSystemPalette`: `background`, `ink`
-and `highlight`, each an RGB triplet in `0..1`. Ink prefers `cyan`, then `accent`,
-then `foreground`; highlights prefer `bright_cyan`, then `foreground`.
+location as fallback. Palette fields are `background`, `ink` and `highlight`,
+each an RGB triplet in `0..1`. Ink prefers `cyan`, then `accent`, then
+`foreground`; highlights prefer `bright_cyan`, then `foreground`. The native
+renderer receives them as uniforms; the WebKit fallback receives
+`window.__pwSystemPalette`.
 
-The daemon checks for palette changes every two seconds and sends
-`pw-system-palette` only when colors change. The wallpaper repaints even when
+The daemon checks for palette changes every two seconds and updates the
+renderer only when colors change. The wallpaper repaints even when
 paused, preserving its current frame. No desktop theme files or saved manual
 ParticleWall colors are changed. Without a valid system palette, original RGB332
 rendering remains available, including on macOS.

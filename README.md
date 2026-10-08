@@ -135,14 +135,15 @@ idempotente de su index.html).
 
 El daemon Linux vive en `linux/` (Rust, GTK4, gtk4-layer-shell y wgpu). Los fondos
 GPU comparten el mismo WGSL que macOS
-(`shared/backgrounds/engines/particle-v1/particle.wgsl`). WebKitGTK 6 es opcional:
-solo lo necesitan los fondos HTML/JS y los de video ASCII.
+(`shared/backgrounds/engines/particle-v1/particle.wgsl`) y los fondos de video ASCII
+se dibujan con wgpu (`shared/backgrounds/engines/ascii-video-v1/ascii.wgsl`).
+WebKitGTK 6 es opcional: solo aporta el respaldo HTML.
 
 ### Instalar
 
 ```bash
 sudo pacman -S --needed gtk4 gtk4-layer-shell rustup
-sudo pacman -S --needed webkitgtk-6.0   # opcional: fondos HTML y video ASCII
+sudo pacman -S --needed webkitgtk-6.0   # opcional: respaldo HTML
 rustup default stable
 ./linux/install.sh                      # --gpu-only fuerza la versión sin WebKit
 ```
@@ -152,7 +153,7 @@ rustup default stable
 launcher y el icono, y arranca el daemon. Las rutas apuntan al checkout desde el
 que se ejecuta. Sin WebKitGTK compila automáticamente la versión solo GPU
 (`cargo build -p particlewall-linux --no-default-features --features gpu,power`):
-conserva ajustes, bandeja y CLI, y lista solo los doce fondos GPU.
+conserva ajustes, bandeja, CLI, video ASCII e importación de YouTube.
 
 ### Uso
 
@@ -187,11 +188,15 @@ pausan el render.
 - Las ventanas GTK que alojan WebKit solo se mapean con un fondo web: realizarlas
   arranca el device Vulkan propio de GTK (~70 MiB de VRAM) aunque el fondo sea GPU.
 - Quads indexados: `particleSample` corre 4 veces por partícula en vez de 6.
+- Video ASCII nativo: una pasada a pantalla completa y una subida de celdas
+  (2 bytes por celda) solo cuando cambia el frame del clip; sigue la paleta de
+  Omarchy y repinta al cambiar de tema aunque esté en pausa.
 - En pausa el bucle despierta a 4 Hz en lugar de al límite de FPS.
 
 Medido con el daemon en una RTX 3060 Ti a 2560×1440 y 30 FPS: 47 MiB de VRAM,
 ~0,9 % de un núcleo de CPU (0,1 % en pausa) y menos del 2 % del tiempo de GPU con
-el fondo más pesado (Nebulosa). Con la ventana de ajustes abierta GTK añade su
+el fondo más pesado (Nebulosa). El video ASCII: 47 MiB de VRAM y ~1,1 % de un
+núcleo. Con la ventana de ajustes abierta GTK añade su
 propio contexto GPU. El límite de FPS es el ajuste con más impacto: el compositor
 recompone la pantalla en cada frame del fondo.
 

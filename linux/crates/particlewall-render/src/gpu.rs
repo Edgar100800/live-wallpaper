@@ -178,6 +178,7 @@ pub struct GpuContext {
     /// Quad index pattern for INDEXED_BATCH particles (VertexPath::Indexed4).
     quad_indices: wgpu::Buffer,
     render_pipelines: RefCell<Vec<Rc<RenderPipelines>>>,
+    pub(crate) ascii_pipelines: RefCell<Vec<Rc<crate::ascii::AsciiPipeline>>>,
 }
 
 impl GpuContext {
@@ -339,6 +340,7 @@ impl GpuContext {
             graph_conn_pipeline,
             quad_indices,
             render_pipelines: RefCell::new(Vec::new()),
+            ascii_pipelines: RefCell::new(Vec::new()),
         }))
     }
 
@@ -675,11 +677,13 @@ impl ParticleRenderer {
     }
 }
 
-/// A `ParticleRenderer` presenting to one Wayland swapchain.
+/// One Wayland swapchain. Scenes (particles, ASCII video) encode into its
+/// frames through `present`, so switching wallpapers never recreates the
+/// swapchain: the NVIDIA Wayland WSI corrupts state when a second Vulkan
+/// swapchain is created on the same connection.
 pub struct GpuPresenter {
-    // Field order matters: the renderer and surface drop before the context
-    // that owns the instance/device.
-    renderer: ParticleRenderer,
+    // Field order matters: the surface drops before the context that owns the
+    // instance/device.
     surface: wgpu::Surface<'static>,
     ctx: Rc<GpuContext>,
     pub config: wgpu::SurfaceConfiguration,
@@ -692,7 +696,6 @@ impl GpuPresenter {
         shared: &mut Option<Rc<GpuContext>>,
         handles: WaylandHandles,
         size: (u32, u32),
-        model: u32,
     ) -> Result<Self, GpuError> {
         let (ctx, surface) = match shared {
             Some(ctx) => {
@@ -740,8 +743,19 @@ impl GpuPresenter {
             .map_err(|e| GpuError::Configure(format!("swapchain unavailable: {e}")))?;
         probe.present();
 
-        let renderer = ParticleRenderer::new(&ctx, format, model, VertexPath::Indexed4);
-        Ok(Self { renderer, surface, ctx, config })
+        Ok(Self { surface, ctx, config })
+    }
+
+    pub fn context(&self) -> &Rc<GpuContext> {
+        &self.ctx
+    }
+
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.config.format
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        (self.config.width, self.config.height)
     }
 
     pub fn resize(&mut self, size: (u32, u32)) {
@@ -750,25 +764,11 @@ impl GpuPresenter {
         self.surface.configure(&self.ctx.device, &self.config);
     }
 
-    pub fn latest_flow_slot(&self) -> f32 {
-        self.renderer.latest_flow_slot()
-    }
-
-    /// See `ParticleRenderer::set_model`. Presenters are permanent per-output
-    /// resources: the NVIDIA Wayland WSI corrupts state when a second Vulkan
-    /// swapchain is created on the same connection.
-    pub fn set_model(&mut self, model: u32) {
-        self.renderer.set_model(model);
-    }
-
-    pub fn model(&self) -> u32 {
-        self.renderer.model()
-    }
-
-    /// Renders and presents one frame. The swapchain image is acquired
-    /// before any work is recorded, so a skipped frame leaves the flow
-    /// simulation untouched.
-    pub fn render(&mut self, u: &Uniforms, background: [f64; 4], delta: f32) {
+    /// Acquires a swapchain image, lets `encode` record the frame into it,
+    /// then submits and presents. The image is acquired before any work is
+    /// recorded, so a skipped frame leaves scene state (e.g. the flow
+    /// simulation) untouched.
+    pub fn present(&mut self, encode: impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView)) {
         let frame = match self.surface.get_current_texture() {
             Ok(t) => t,
             Err(_) => {
@@ -787,7 +787,7 @@ impl GpuPresenter {
             .ctx
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
-        self.renderer.encode(&mut encoder, &view, u, background, delta);
+        encode(&mut encoder, &view);
         self.ctx.queue.submit(Some(encoder.finish()));
         frame.present();
     }

@@ -143,6 +143,24 @@ Medido en RTX 3060 Ti, salida DP-3 2560×1440 con escala 1,25, 30 FPS.
   sin cambio medible. Herramientas: `cargo run --release -p particlewall-render
   --example bench` (offscreen, timestamps) y `--example live` (superficie real).
 
+### Video ASCII nativo en Linux (2026-10-08)
+
+- `particlewall-render::ascii` + `ascii-video-v1/ascii.wgsl`: port directo del
+  shader WebGL2 de `SpiderManASCIIWallpaper/index.html`. Lee `clip.asciivideo` o
+  `stream.json` + `frames/<n>.bin` frame a frame; sube celdas solo cuando cambia
+  el frame del clip.
+- El daemon usa este renderer para cualquier fondo con clip nativo, con la paleta
+  de Omarchy y los ajustes ASCII (modo de color, limpieza, separación) en vivo.
+  Cambios de tema o ajustes repintan el frame aunque esté en pausa. WebKit queda
+  solo como respaldo: la build solo GPU ya incluye Spider-Man ASCII y la
+  importación de YouTube.
+- Paridad: pruebas píxel a píxel contra una transcripción en CPU del shader
+  WebGL (cuatro combinaciones de color/limpieza) y comparación única contra la
+  página real en Chromium a 2560×1440: 100 % idéntico en colores originales,
+  99,86 % idéntico con paleta Omarchy y el resto a ≤ 1/255.
+- En vivo (RTX 3060 Ti, 2560×1440, 30 FPS): 47 MiB de VRAM, 1,1 % de un núcleo,
+  0,1 % en pausa, un solo device Vulkan.
+
 ### Pendiente del port
 
 - [ ] Verificación en el Mac físico: `swift test` + `build-app.sh` con el MSL
@@ -369,7 +387,8 @@ Compatibilidad y formatos:
 - [ ] Importación de `.mp4` y `.mov`.
 - [x] Formato offline `.asciivideo` y conversor de celdas ASCII sin análisis en runtime.
 - [x] Renderer Metal inicial para wallpapers `.asciivideo` importados.
-- [ ] Renderer wgpu compartido para `ascii-video-v1`.
+- [x] Renderer wgpu compartido para `ascii-video-v1` (Linux; macOS sigue con su
+      renderer Metal propio).
 - [ ] API opt-in de controles para HTML arbitrario.
 - [ ] Controles de lista, vectores agrupados y presets de parámetros no cromáticos.
 - [ ] Conversión declarativa segura de fórmulas conocidas a Metal.
