@@ -76,6 +76,9 @@ pub fn all() -> Vec<Wallpaper> {
             list.push(Wallpaper { id, name, index: path.join("index.html") });
         }
     }
+    // Without WebKit only the wgpu wallpapers can render.
+    #[cfg(all(feature = "gpu", not(feature = "webkit")))]
+    list.retain(|w| super::gpu_model_for(&w.id).is_some());
     list.sort_by(|a,b| a.name.cmp(&b.name));
     list
 }

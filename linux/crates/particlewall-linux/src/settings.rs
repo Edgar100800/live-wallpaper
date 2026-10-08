@@ -133,6 +133,13 @@ pub fn open(snapshot: Snapshot, tx: CmdTx) {
     let ascii_page = page("Video ASCII", true);
     let import_slot = page("Importar video", false);
     let particles_page = page("Partículas", true);
+    // ASCII-video wallpapers render through WebKit; hide their tabs otherwise.
+    #[cfg(not(feature = "webkit"))]
+    for body in [&ascii_page, &import_slot] {
+        if let Some(tab) = body.ancestor(gtk4::ScrolledWindow::static_type()) {
+            tab.set_visible(false);
+        }
+    }
     let ascii_left = gtk4::Box::new(Orientation::Vertical, 24); let reprocess_slot = gtk4::Box::new(Orientation::Vertical, 24);
     ascii_page.append(&ascii_left); ascii_page.append(&reprocess_slot);
     let particles_left = gtk4::Box::new(Orientation::Vertical, 24); let particles_right = gtk4::Box::new(Orientation::Vertical, 24);

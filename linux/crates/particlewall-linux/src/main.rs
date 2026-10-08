@@ -17,21 +17,18 @@
 //!   particlewall --app        launcher entry: ensure the daemon runs and
 //!                             open the settings window
 
-#[cfg(feature = "web")]
 mod layer;
-#[cfg(feature = "web")]
 mod web;
-#[cfg(feature = "web")]
 mod control;
-#[cfg(all(feature = "web", feature = "power"))]
+#[cfg(feature = "power")]
 mod power;
-#[cfg(feature = "web")]
 mod settings;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
-    #[cfg(feature = "web")]
+    // ASCII-video wallpapers only render through WebKit.
+    #[cfg(feature = "webkit")]
     if args.first().map(String::as_str) == Some("--reprocess") {
         let result = args.get(1).ok_or_else(|| "Falta el ID del fondo".to_string()).and_then(|id| {
             let size = args.get(2).ok_or("Falta el tamaño de celda (4, 6, 8, 12 o 16)")?.parse().map_err(|_| "Tamaño de celda inválido")?;
@@ -41,7 +38,7 @@ fn main() {
         return;
     }
 
-    #[cfg(feature = "web")]
+    #[cfg(feature = "webkit")]
     if args.first().map(String::as_str) == Some("--import-youtube") {
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let result = args.get(1).ok_or_else(|| "Falta la URL".to_string()).and_then(|url| {
@@ -65,16 +62,7 @@ fn main() {
         return;
     }
 
-    #[cfg(feature = "web")]
-    {
-        web::run();
-    }
-    #[cfg(not(feature = "web"))]
-    {
-        eprintln!("particlewall was built without the `web` feature.");
-        eprintln!("Rebuild with --features web, or use pw-layer-spike for the no-webkit spike.");
-        std::process::exit(2);
-    }
+    web::run();
 }
 
 /// Desktop-launcher mode: make sure the daemon is running, then open the
@@ -231,16 +219,11 @@ fn cli_command(args: &[String]) -> Option<CliAction> {
             Some(CliAction::Send(profile_cmd("profile-apply", args)))
         }
         Some("--list") => {
-            #[cfg(feature = "web")]
-            {
-                let mut out = String::new();
-                for wp in web::library::all() {
-                    out.push_str(&format!("{}\t{}\n", wp.id, wp.name));
-                }
-                Some(CliAction::Print(out))
+            let mut out = String::new();
+            for wp in web::library::all() {
+                out.push_str(&format!("{}\t{}\n", wp.id, wp.name));
             }
-            #[cfg(not(feature = "web"))]
-            Some(CliAction::Print(String::new()))
+            Some(CliAction::Print(out))
         }
         _ => None,
     }

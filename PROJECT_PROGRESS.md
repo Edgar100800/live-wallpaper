@@ -130,6 +130,15 @@ Medido en RTX 3060 Ti, salida DP-3 2560×1440 con escala 1,25, 30 FPS.
   `every_model_encodes_without_validation_errors`.
 - Pausa: el bucle GPU sondea a 4 Hz en vez de despertar al límite de FPS.
 - El WGSL se embebe en el binario (`include_str!`); ya no depende del checkout.
+- WebKitGTK opcional (feature `webkit`): `--no-default-features --features
+  gpu,power` compila el daemon con ajustes, bandeja y CLI, y lista solo los doce
+  fondos GPU. `install.sh` lo elige solo si falta `webkitgtk-6.0` o con
+  `--gpu-only`.
+- Las ventanas GTK de WebKit solo se mapean con un fondo web: al realizarlas GTK
+  creaba un segundo device Vulkan (+70 MiB de VRAM, ~250 cambios de contexto/s).
+  Daemon GPU medido en vivo: 47 MiB de VRAM, 0,9 % de un núcleo, 0,1 % en pausa.
+  El hilo sin nombre que despierta a 100 Hz pertenece al driver NVIDIA (también
+  aparece en `examples/live`).
 - CPU en vivo ~0,9 % de un núcleo a 30 FPS, dominada por el present del driver;
   sin cambio medible. Herramientas: `cargo run --release -p particlewall-render
   --example bench` (offscreen, timestamps) y `--example live` (superficie real).
@@ -144,9 +153,9 @@ Medido en RTX 3060 Ti, salida DP-3 2560×1440 con escala 1,25, 30 FPS.
       un `--set-color` externo.
 - [ ] macOS: adoptar `vsIndexed` con `drawIndexedPrimitives` (el MSL ya lo
       incluye) y medirlo con Instruments.
-- [ ] Linux: validar en vivo el daemon con superficies nativas, multi-monitor y
-      cambio de escala (el crate solo se verificó con `cargo check`; WebKitGTK 6
-      no estaba instalado).
+- [ ] Linux: validar en vivo multi-monitor, cambio de escala y la build con
+      WebKit (la build solo GPU ya se validó en vivo en una salida 1,25×).
+- [ ] Linux: liberar el contexto GPU de GTK al cerrar la ventana de ajustes.
 
 ## Estado general
 

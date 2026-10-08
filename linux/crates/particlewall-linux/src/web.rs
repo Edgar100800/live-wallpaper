@@ -1,18 +1,26 @@
 //! M0A/M1: wallpaper hosts for Hyprland/Wayland.
 //!
 //! Two renderer paths behind one control plane:
-//! - Web: WebKitGTK loading the bundled HTML wallpapers (all eight models).
-//! - GPU: wgpu/Vulkan presenting the shared particle-v1 WGSL modules
-//!   (parametric-waves in M1) directly into the layer surface.
+//! - Web (feature "webkit"): WebKitGTK loading HTML and ASCII-video
+//!   wallpapers.
+//! - GPU (feature "gpu"): wgpu/Vulkan presenting the shared particle-v1 WGSL
+//!   modules directly into dedicated layer surfaces.
+//!
+//! Without "webkit" the daemon, settings window, tray and CLI still run;
+//! only GPU wallpapers are listed and applied.
 
 use gtk4::prelude::*;
-use gtk4::{Application, ApplicationWindow, gdk as gtk_gdk, glib};
+use gtk4::{Application, ApplicationWindow, glib};
+#[cfg(feature = "webkit")]
+use gtk4::gdk as gtk_gdk;
 use ksni::blocking::TrayMethods;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
+#[cfg(feature = "webkit")]
 use webkit6::prelude::*;
+#[cfg(feature = "webkit")]
 use webkit6::{
     NavigationPolicyDecision, PolicyDecisionType, UserContentInjectedFrames,
     Settings, UserScript, UserScriptInjectionTime, WebView,
@@ -64,6 +72,7 @@ fn gpu_model_for(wallpaper_id: &str) -> Option<u32> {
     })
 }
 
+#[cfg(feature = "webkit")]
 /// Repo-relative location of the shared JS contract scripts.
 fn shared_script(name: &str) -> String {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../shared/scripts/");
@@ -71,6 +80,7 @@ fn shared_script(name: &str) -> String {
         .unwrap_or_else(|e| panic!("missing shared script {name}: {e}"))
 }
 
+#[cfg(feature = "webkit")]
 /// Shared JS contract injection. Order matters: dpr-clamp, then the rAF gate,
 /// then pause state and FPS cap (raf-patch initializes __pwFPSCap = 0).
 fn user_scripts(paused: bool, fps_cap: u32) -> Vec<String> {
@@ -83,6 +93,7 @@ fn user_scripts(paused: bool, fps_cap: u32) -> Vec<String> {
     vec![dpr, raf, playback, palette, harden]
 }
 
+#[cfg(feature = "webkit")]
 fn attach_scripts(webview: &WebView, paused: bool, fps_cap: u32, ascii: &library::ASCIISettings) {
     let all = UserContentInjectedFrames::AllFrames;
     let start = UserScriptInjectionTime::Start;
@@ -104,6 +115,7 @@ fn attach_scripts(webview: &WebView, paused: bool, fps_cap: u32, ascii: &library
     }
 }
 
+#[cfg(feature = "webkit")]
 /// Local-only policy mirroring WebViewFactory.swift via particlewall-contracts:
 /// about/blob/data allowed; file URIs must stay inside the wallpaper root.
 fn install_navigation_policy(webview: &WebView, root: &std::path::Path) {
@@ -278,6 +290,11 @@ fn switch_renderer(
     #[cfg(not(feature = "gpu"))]
     let gpu_capable = false;
 
+    #[cfg(not(feature = "webkit"))]
+    if !gpu_capable {
+        return format!("{{\"error\":\"'{wallpaper_id}' needs a build with the webkit feature\"}}\n");
+    }
+
     let windows: Vec<(String, ApplicationWindow)> = state.borrow().windows.clone();
 
     if gpu_capable {
@@ -362,7 +379,10 @@ fn switch_renderer(
                 });
                 match built {
                     Ok((session, presenter)) => {
-                        println!("pw: GPU renderer on {name}");
+                        println!(
+                            "pw: GPU renderer on {name} ({}x{} px)",
+                            session.size_px.0, session.size_px.1
+                        );
                         outputs.push(gpu::GpuOutput {
                             id: name.clone(),
                             model,
@@ -402,30 +422,43 @@ fn switch_renderer(
             for out in outputs {
                 gpu_rt.borrow_mut().parked.push(out);
             }
-            eprintln!("pw: GPU renderer unavailable; falling back to web");
+            #[cfg(feature = "webkit")]
+            {
+                eprintln!("pw: GPU renderer unavailable; falling back to web");
+                for (id, window) in &windows {
+                    window.set_visible(true);
+                    spawn_web_child(state, window, id, wallpaper_id);
+                }
+                format!("{{\"renderer\":\"web\",\"wallpaper\":\"{wallpaper_id}\"}}\n")
+            }
+            #[cfg(not(feature = "webkit"))]
+            {
+                eprintln!("pw: GPU renderer unavailable and no web fallback in this build");
+                format!("{{\"error\":\"GPU renderer unavailable: {}\"}}\n", gpu_err.unwrap_or_default())
+            }
+        }
+    } else {
+        #[cfg(not(feature = "webkit"))]
+        unreachable!("non-GPU wallpapers return early without webkit");
+        #[cfg(feature = "webkit")]
+        {
+            // Park (don't destroy) GPU presenters; see GpuRuntime::parked. The
+            // surfaces keep their last frozen frame, hidden behind the GTK web
+            // windows that get (re)mapped here and therefore stack on top.
+            {
+                let mut rt = gpu_rt.borrow_mut();
+                let mut actives = std::mem::take(&mut rt.outputs);
+                rt.parked.append(&mut actives);
+                rt.wallpaper.clear();
+            }
+            for (_, w) in &windows {
+                w.set_visible(true);
+            }
             for (id, window) in &windows {
-                window.set_visible(true);
                 spawn_web_child(state, window, id, wallpaper_id);
             }
             format!("{{\"renderer\":\"web\",\"wallpaper\":\"{wallpaper_id}\"}}\n")
         }
-    } else {
-        // Park (don't destroy) GPU presenters; see GpuRuntime::parked. The
-        // surfaces keep their last frozen frame, hidden behind the GTK web
-        // windows that get (re)mapped here and therefore stack on top.
-        {
-            let mut rt = gpu_rt.borrow_mut();
-            let mut actives = std::mem::take(&mut rt.outputs);
-            rt.parked.append(&mut actives);
-            rt.wallpaper.clear();
-        }
-        for (_, w) in &windows {
-            w.set_visible(true);
-        }
-        for (id, window) in &windows {
-            spawn_web_child(state, window, id, wallpaper_id);
-        }
-        format!("{{\"renderer\":\"web\",\"wallpaper\":\"{wallpaper_id}\"}}\n")
     }
 }
 
@@ -433,7 +466,9 @@ fn clear_web_children(
     state: &Rc<RefCell<control::DaemonState>>,
     windows: &[(String, ApplicationWindow)],
 ) {
+    #[allow(unused_variables)]
     let webviews = std::mem::take(&mut state.borrow_mut().webviews);
+    #[cfg(feature = "webkit")]
     for (_, webview) in &webviews {
         webview.stop_loading();
     }
@@ -442,6 +477,7 @@ fn clear_web_children(
     }
 }
 
+#[cfg(feature = "webkit")]
 fn spawn_web_child(
     state: &Rc<RefCell<control::DaemonState>>,
     window: &ApplicationWindow,
@@ -648,15 +684,8 @@ pub fn run() {
             let st = state.clone();
             glib::spawn_future_local(async move {
                 while prx.recv().await.is_ok() {
-                    let paused = st.borrow().flags.effective_paused();
-                    let js = format!("window.__pwPaused = {paused}");
-                    let webviews: Vec<WebView> = {
-                        let st = st.borrow();
-                        st.webviews.iter().map(|(_, wv)| wv.clone()).collect()
-                    };
-                    for wv in &webviews {
-                        wv.evaluate_javascript(&js, None, None, None::<&gtk4::gio::Cancellable>, |_| {});
-                    }
+                    let st = st.borrow();
+                    st.eval_js(&format!("window.__pwPaused = {}", st.flags.effective_paused()));
                 }
             });
         }
@@ -697,7 +726,10 @@ pub fn run() {
             }
         }
 
-        // Windows for every output; children come from switch_renderer.
+        // Web host windows for every output; children come from
+        // switch_renderer. They are mapped only when a web wallpaper needs
+        // them: realizing a GTK window starts GTK's own Vulkan device (about
+        // 70 MiB of VRAM plus driver threads), which GPU wallpapers never use.
         for monitor in layer::monitors() {
             let id = layer::monitor_identity(&monitor);
             let geometry = monitor.geometry();
@@ -705,7 +737,6 @@ pub fn run() {
 
             let window = ApplicationWindow::builder().application(&app).build();
             layer::setup_layer_window(&window);
-            window.present();
             state.borrow_mut().windows.push((id.clone(), window));
         }
 
@@ -731,10 +762,7 @@ pub fn run() {
                 let next = omarchy_palette::read();
                 // A theme switch can briefly remove the file; keep the last palette.
                 if next.is_some() && next != previous {
-                    let js = omarchy_palette::script(next.as_ref());
-                    for (_, wv) in &st.borrow().webviews {
-                        wv.evaluate_javascript(&js, None, None, None::<&gtk4::gio::Cancellable>, |_| {});
-                    }
+                    st.borrow().eval_js(&omarchy_palette::script(next.as_ref()));
                     previous = next;
                 }
                 glib::ControlFlow::Continue
@@ -748,7 +776,7 @@ pub fn run() {
     let _ = app.run();
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "webkit"))]
 pub(crate) mod tests {
     use super::*;
 

@@ -133,23 +133,26 @@ idempotente de su index.html).
 
 ## Linux (Omarchy / Hyprland)
 
-El daemon Linux vive en `linux/` (Rust, GTK4, gtk4-layer-shell, WebKitGTK 6 y wgpu).
-Los fondos GPU comparten el mismo WGSL que macOS
-(`shared/backgrounds/engines/particle-v1/particle.wgsl`); los fondos HTML y ASCII
-usan WebKitGTK.
+El daemon Linux vive en `linux/` (Rust, GTK4, gtk4-layer-shell y wgpu). Los fondos
+GPU comparten el mismo WGSL que macOS
+(`shared/backgrounds/engines/particle-v1/particle.wgsl`). WebKitGTK 6 es opcional:
+solo lo necesitan los fondos HTML/JS y los de video ASCII.
 
 ### Instalar
 
 ```bash
-sudo pacman -S --needed webkitgtk-6.0 gtk4 gtk4-layer-shell rustup
+sudo pacman -S --needed gtk4 gtk4-layer-shell rustup
+sudo pacman -S --needed webkitgtk-6.0   # opcional: fondos HTML y video ASCII
 rustup default stable
-./linux/install.sh
+./linux/install.sh                      # --gpu-only fuerza la versión sin WebKit
 ```
 
 `install.sh` compila en release, instala la unidad `systemd --user`
 (`particlewall.service`, ligada a `graphical-session.target`), la entrada del
 launcher y el icono, y arranca el daemon. Las rutas apuntan al checkout desde el
-que se ejecuta.
+que se ejecuta. Sin WebKitGTK compila automáticamente la versión solo GPU
+(`cargo build -p particlewall-linux --no-default-features --features gpu,power`):
+conserva ajustes, bandeja y CLI, y lista solo los doce fondos GPU.
 
 ### Uso
 
@@ -181,12 +184,15 @@ pausan el render.
   `wp_viewporter`): una pantalla 2560×1440 a 1,25× renderiza 2560×1440, no 4096×2304.
 - Un device wgpu, shader y pipelines compartidos por todas las pantallas; dos
   imágenes de swapchain por salida.
+- Las ventanas GTK que alojan WebKit solo se mapean con un fondo web: realizarlas
+  arranca el device Vulkan propio de GTK (~70 MiB de VRAM) aunque el fondo sea GPU.
 - Quads indexados: `particleSample` corre 4 veces por partícula en vez de 6.
 - En pausa el bucle despierta a 4 Hz en lugar de al límite de FPS.
 
-Medido en una RTX 3060 Ti a 2560×1440 y 30 FPS: ~47 MiB de VRAM por pantalla,
-~0,9 % de un núcleo de CPU y menos del 2 % del tiempo de GPU con el fondo más
-pesado (Nebulosa). El límite de FPS es el ajuste con más impacto: el compositor
+Medido con el daemon en una RTX 3060 Ti a 2560×1440 y 30 FPS: 47 MiB de VRAM,
+~0,9 % de un núcleo de CPU (0,1 % en pausa) y menos del 2 % del tiempo de GPU con
+el fondo más pesado (Nebulosa). Con la ventana de ajustes abierta GTK añade su
+propio contexto GPU. El límite de FPS es el ajuste con más impacto: el compositor
 recompone la pantalla en cada frame del fondo.
 
 Mediciones reproducibles:
