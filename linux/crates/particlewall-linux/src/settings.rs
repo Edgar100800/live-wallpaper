@@ -157,7 +157,7 @@ pub fn open(snapshot: Snapshot, tx: CmdTx) {
     if snapshot.system_paused { playback.append(&label("Pausa automática del sistema activa.")); }
     let fps = ComboBoxText::new();
     for (id, title) in [("15", "15 FPS · Ahorro"), ("30", "30 FPS · Equilibrado"),
-        ("60", "60 FPS · Fluido"), ("0", "Automático")] { fps.append(Some(id), title); }
+        ("60", "60 FPS · Fluido"), ("0", "Monitor · sincronizado")] { fps.append(Some(id), title); }
     if ![0, 15, 30, 60].contains(&snapshot.config.fps_cap) {
         fps.append(Some(&snapshot.config.fps_cap.to_string()), &format!("{} FPS", snapshot.config.fps_cap));
     }

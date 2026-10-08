@@ -161,6 +161,19 @@ Medido en RTX 3060 Ti, salida DP-3 2560×1440 con escala 1,25, 30 FPS.
 - En vivo (RTX 3060 Ti, 2560×1440, 30 FPS): 47 MiB de VRAM, 1,1 % de un núcleo,
   0,1 % en pausa, un solo device Vulkan.
 
+### Sincronización con el monitor (2026-10-08)
+
+- Límite de FPS 0 = *Monitor*: cada salida pide `wl_surface.frame` en la
+  conexión Wayland propia junto a cada present y vuelve a dibujar cuando el
+  compositor responde; el socket se vigila desde el bucle de GLib. Medido en
+  DP-3 (164,8 Hz): partículas a 164 frames/s (4,2 % de un núcleo), video ASCII a
+  30 frames/s (solo cuando cambia el frame del clip), 0 en pausa.
+- Si un callback no llega en 1 s la salida dibuja igualmente (~1 fps mientras
+  el compositor no muestra la superficie). Un supervisor a 4 Hz arranca la
+  cadena, recoge la reanudación y los repintados.
+- Límites explícitos siguen con temporizador; el ASCII también omite frames
+  repetidos ahí. `PW_LOG_FPS=1` registra frames presentados por salida.
+
 ### Pendiente del port
 
 - [ ] Verificación en el Mac físico: `swift test` + `build-app.sh` con el MSL

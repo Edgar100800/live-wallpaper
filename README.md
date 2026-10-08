@@ -170,7 +170,7 @@ conserva ajustes, bandeja, CLI, video ASCII e importación de YouTube.
   particlewall --list                      # fondos disponibles
   particlewall --apply NebulaWallpaper     # aplicar por ID o nombre
   particlewall --set-color background=#0a0a1a --set-color particle=#7ee0c0
-  particlewall --fps 30                    # 0 = sin límite
+  particlewall --fps 30                    # 0 = frecuencia del monitor
   particlewall --pause | --resume | --toggle
   particlewall --status                    # estado en JSON
   ```
@@ -191,12 +191,18 @@ pausan el render.
 - Video ASCII nativo: una pasada a pantalla completa y una subida de celdas
   (2 bytes por celda) solo cuando cambia el frame del clip; sigue la paleta de
   Omarchy y repinta al cambiar de tema aunque esté en pausa.
+- Con el límite de FPS en 0 (*Monitor*) cada pantalla dibuja al recibir el
+  `wl_surface.frame` del compositor: a la frecuencia de su monitor (165 Hz en un
+  panel de 165 Hz) y alineado con su refresco. Un límite explícito (15/30/60)
+  usa un temporizador. El video ASCII solo presenta cuando cambia el frame del
+  clip (~30/s) en ambos modos.
 - En pausa el bucle despierta a 4 Hz en lugar de al límite de FPS.
 
 Medido con el daemon en una RTX 3060 Ti a 2560×1440 y 30 FPS: 47 MiB de VRAM,
 ~0,9 % de un núcleo de CPU (0,1 % en pausa) y menos del 2 % del tiempo de GPU con
-el fondo más pesado (Nebulosa). El video ASCII: 47 MiB de VRAM y ~1,1 % de un
-núcleo. Con la ventana de ajustes abierta GTK añade su
+el fondo más pesado (Nebulosa). El video ASCII: 47 MiB de VRAM y ~1,1–1,5 % de un
+núcleo. Partículas sincronizadas a 165 Hz: ~4,2 % de un núcleo; con límite 60,
+~2,3 %. `PW_LOG_FPS=1` imprime los frames presentados por pantalla cada 5 s. Con la ventana de ajustes abierta GTK añade su
 propio contexto GPU. El límite de FPS es el ajuste con más impacto: el compositor
 recompone la pantalla en cada frame del fondo.
 

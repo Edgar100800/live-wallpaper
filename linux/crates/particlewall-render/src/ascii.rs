@@ -365,13 +365,32 @@ impl AsciiPlayer {
         self.elapsed += f64::from(delta.clamp(0.0, 0.1));
     }
 
-    /// Jumps to an absolute clip time (tests, benchmarks).
+    /// Jumps to an absolute clip time; hosts that share one clock across
+    /// outputs drive playback with it.
     pub fn seek(&mut self, seconds: f64) {
         self.elapsed = seconds.max(0.0);
     }
 
     pub fn current_frame(&self) -> u32 {
-        ((self.elapsed * self.clip.fps).floor() as u64 % u64::from(self.clip.frame_count)) as u32
+        self.frame_at(self.elapsed)
+    }
+
+    /// Clip frame shown at `seconds` of playback.
+    pub fn frame_at(&self, seconds: f64) -> u32 {
+        ((seconds.max(0.0) * self.clip.fps).floor() as u64 % u64::from(self.clip.frame_count)) as u32
+    }
+
+    /// True when drawing at `seconds` would show a different clip frame than
+    /// the one already on screen. Hosts skip presenting otherwise.
+    pub fn changes_at(&self, seconds: f64) -> bool {
+        self.uploaded != Some(self.frame_at(seconds))
+    }
+
+    /// Time from `seconds` until the next clip frame starts.
+    pub fn until_next_frame(&self, seconds: f64) -> std::time::Duration {
+        let position = seconds.max(0.0) * self.clip.fps;
+        let next = (position.floor() + 1.0) / self.clip.fps;
+        std::time::Duration::from_secs_f64((next - seconds.max(0.0)).max(0.0))
     }
 
     /// Uploads the current clip frame if it changed, then draws it into
@@ -704,6 +723,27 @@ mod tests {
                 assert!(worst <= 1, "style {i} t {seconds}: diff {worst}");
             }
         }
+    }
+
+    #[test]
+    fn player_reports_frame_changes_and_next_frame_time() {
+        let dir = temp_dir("timing");
+        let mut bytes = header(2, 1, 3);
+        bytes.extend([0u8; 12]);
+        std::fs::write(dir.join("clip.asciivideo"), &bytes).unwrap();
+        let ctx = GpuContext::headless(wgpu::Features::empty()).expect("GPU adapter");
+        let mut player = AsciiPlayer::new(&ctx, wgpu::TextureFormat::Bgra8Unorm, &dir).unwrap();
+        // 30 fps, 3 frames: frame boundaries every 1/30 s, wrapping at 0.1 s.
+        assert_eq!(player.frame_at(0.05), 1);
+        assert_eq!(player.frame_at(0.11), 0);
+        let wait = player.until_next_frame(0.05).as_secs_f64();
+        assert!((wait - (2.0 / 30.0 - 0.05)).abs() < 1e-9, "{wait}");
+        assert!(player.changes_at(0.0), "nothing uploaded yet");
+        player.seek(0.0);
+        render(&ctx, &mut player, (8, 4), &AsciiStyle::default());
+        assert!(!player.changes_at(0.02), "same clip frame");
+        assert!(player.changes_at(0.04), "next clip frame");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

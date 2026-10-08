@@ -14,13 +14,21 @@
 //! wp_fractional_scale_v1 + wp_viewporter a 1.25x output renders 2560x1440
 //! instead of the integer-scale 4096x2304 the compositor would downsample
 //! (2.56x the pixels and swapchain memory).
+//!
+//! Frame pacing: with the FPS cap at 0 each surface asks for a
+//! wl_surface.frame callback alongside every present; the compositor answers
+//! once per refresh of that surface's output, so rendering follows the
+//! monitor's rate (165 Hz on a 165 Hz panel) and stops while the compositor
+//! withholds callbacks. The callback request goes out before the Vulkan WSI's
+//! commit on the same wl_display, so that commit carries it.
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::os::fd::{AsRawFd, RawFd};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use wayland_client::protocol::{wl_compositor::WlCompositor, wl_output, wl_output::WlOutput, wl_registry, wl_registry::WlRegistry, wl_surface, wl_surface::WlSurface};
+use wayland_client::protocol::{wl_callback::{self, WlCallback}, wl_compositor::WlCompositor, wl_output, wl_output::WlOutput, wl_registry, wl_registry::WlRegistry, wl_surface, wl_surface::WlSurface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_shell_v1::{Layer, ZwlrLayerShellV1}};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_surface_v1, zwlr_layer_surface_v1::{Anchor, KeyboardInteractivity, ZwlrLayerSurfaceV1}};
@@ -171,6 +179,22 @@ wayland_client::delegate_noop!(WState: WpFractionalScaleManagerV1);
 wayland_client::delegate_noop!(WState: WpViewporter);
 wayland_client::delegate_noop!(WState: WpViewport);
 
+/// Frame callback "done": the compositor is ready for the next frame.
+impl Dispatch<WlCallback, Arc<AtomicBool>> for WState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WlCallback,
+        event: wl_callback::Event,
+        data: &Arc<AtomicBool>,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if let wl_callback::Event::Done { .. } = event {
+            data.store(true, Ordering::Release);
+        }
+    }
+}
+
 impl Dispatch<WlSurface, ()> for WState {
     fn event(
         _state: &mut Self,
@@ -208,6 +232,8 @@ pub struct GpuLayerSurface {
     layer_surface: ZwlrLayerSurfaceV1,
     fractional: Option<WpFractionalScaleV1>,
     viewport: Option<WpViewport>,
+    /// Set by the frame callback requested with the last present.
+    frame_done: Arc<AtomicBool>,
     /// wl_display pointer of the dedicated connection.
     pub wl_display: *mut std::ffi::c_void,
     /// wl_surface (as wl_proxy) pointer backing `surface`.
@@ -264,6 +290,32 @@ impl WaylandGpu {
         })
     }
 
+    /// Socket of the dedicated connection, for the host's main-loop watch.
+    pub fn poll_fd(&self) -> RawFd {
+        self.inner.conn.backend().poll_fd().as_raw_fd()
+    }
+
+    /// Reads whatever the compositor sent and dispatches it without
+    /// blocking (frame callbacks, configures). Call when `poll_fd` is
+    /// readable. The Vulkan WSI reads the same socket for its own queue;
+    /// prepare_read keeps the two readers consistent.
+    pub fn dispatch(&self) -> Result<(), String> {
+        let inner = &self.inner;
+        let mut queue = inner.queue.borrow_mut();
+        let mut state = inner.state.borrow_mut();
+        queue.dispatch_pending(&mut state).map_err(|e| format!("wayland dispatch: {e}"))?;
+        if let Some(guard) = queue.prepare_read() {
+            match guard.read() {
+                Ok(_) => {}
+                Err(wayland_client::backend::WaylandError::Io(e))
+                    if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => return Err(format!("wayland read: {e}")),
+            }
+        }
+        queue.dispatch_pending(&mut state).map_err(|e| format!("wayland dispatch: {e}"))?;
+        Ok(())
+    }
+
     /// Connector names ("HDMI-A-1") of the current outputs.
     pub fn output_names(&self) -> Vec<String> {
         self.inner
@@ -305,6 +357,7 @@ impl WaylandGpu {
             layer_surface,
             fractional,
             viewport,
+            frame_done: Arc::new(AtomicBool::new(false)),
             wl_display: wl_display.cast(),
             wl_surface: wl_surface.cast(),
             size_px: (1, 1),
@@ -408,6 +461,17 @@ fn wait_configure(
 }
 
 impl GpuLayerSurface {
+    /// Requests a frame callback; the next present's commit carries it.
+    pub fn request_frame(&self) {
+        self.frame_done.store(false, Ordering::Release);
+        self.surface.frame(&self._gpu.qh, self.frame_done.clone());
+    }
+
+    /// True once since the compositor answered the last `request_frame`.
+    pub fn take_frame_done(&self) -> bool {
+        self.frame_done.swap(false, Ordering::AcqRel)
+    }
+
     /// Raw handle pair for `GpuPresenter::new`.
     pub fn handles(&self) -> particlewall_render::gpu::WaylandHandles {
         particlewall_render::gpu::WaylandHandles {

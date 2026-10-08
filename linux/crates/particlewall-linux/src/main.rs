@@ -5,7 +5,7 @@
 //!   particlewall --pause      pause rendering on all outputs
 //!   particlewall --resume     resume rendering
 //!   particlewall --toggle     toggle pause
-//!   particlewall --fps <N>    set global FPS cap (0 = unlimited)
+//!   particlewall --fps <N>    set global FPS cap (0 = monitor refresh rate)
 //!   particlewall --list       list available wallpapers
 //!   particlewall --apply <id|nombre>   switch wallpaper live
 //!   particlewall --set-color background=#0a0a1a --set-color particle=#7ee0c0
@@ -149,10 +149,10 @@ fn cli_command(args: &[String]) -> Option<CliAction> {
         Some("--settings") => Some(CliAction::Send(r#"{"cmd":"open-settings"}"#.into())),
         Some("--status") => Some(CliAction::Send(r#"{"cmd":"status"}"#.into())),
         Some("--fps") => {
-            let v = args.get(1).expect("--fps requires a value (0 = unlimited)");
+            let v = args.get(1).expect("--fps requires a value (0 = monitor refresh rate)");
             v.parse::<u32>().ok().map(|v| CliAction::Send(format!(r#"{{"cmd":"fps","value":{v}}}"#)))
                 .or_else(|| {
-                    eprintln!("--fps expects an integer (0 = unlimited), got '{v}'");
+                    eprintln!("--fps expects an integer (0 = monitor refresh rate), got '{v}'");
                     None
                 })
         }
