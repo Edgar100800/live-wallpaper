@@ -2,6 +2,7 @@
 //!
 //! Mirrors PowerManager.swift policy inputs onto Linux:
 //!   - logind PrepareForSleep / Lock / Unlock  -> system unavailable
+//!   - Hyprland session lock / DPMS (IPC poll) -> system unavailable
 //!   - Hyprland fullscreen (IPC)               -> power save (wallpaper hidden)
 //!   - UPower DisplayDevice                    -> battery detection
 //!
@@ -19,6 +20,11 @@ use std::time::Duration;
 struct PowerState {
     screen_locked: bool,
     screens_asleep: bool,
+    /// Hyprland holds an ext-session-lock (Omarchy's lock never signals
+    /// logind Lock).
+    compositor_locked: bool,
+    /// Every enabled Hyprland monitor is DPMS-off.
+    displays_off: bool,
     fullscreen: bool,
     on_battery: bool,
 }
@@ -60,7 +66,10 @@ impl PowerMonitor {
                     let inputs = particlewall_contracts::playback::PolicyInputs {
                         user_paused: false,
                         power_save: s.fullscreen,
-                        system_unavailable: s.screen_locked || s.screens_asleep,
+                        system_unavailable: s.screen_locked
+                            || s.screens_asleep
+                            || s.compositor_locked
+                            || s.displays_off,
                         // Detection only for now: pausing on battery needs a
                         // user-facing setting (macOS default is off too).
                         battery_pause: false,
@@ -134,6 +143,21 @@ impl PowerMonitor {
                 .ok();
         }
 
+        // FR-PWR-01/02 on Hyprland: session lock and DPMS. Hyprland emits no
+        // event for either, so poll its monitor state.
+        {
+            let state = state.clone();
+            let recompute = recompute.clone();
+            std::thread::Builder::new()
+                .name("pw-hyprland-session".into())
+                .spawn(move || {
+                    if let Err(e) = watch_hyprland_session(&state, recompute) {
+                        eprintln!("pw: Hyprland session monitor unavailable: {e}");
+                    }
+                })
+                .ok();
+        }
+
         // FR-PWR-04: Hyprland fullscreen via the event socket.
         {
             let state = state.clone();
@@ -155,8 +179,8 @@ impl PowerMonitor {
     pub fn snapshot(&self) -> PowerSnapshot {
         let s = self.state.lock().unwrap();
         PowerSnapshot {
-            screen_locked: s.screen_locked,
-            screens_asleep: s.screens_asleep,
+            screen_locked: s.screen_locked || s.compositor_locked,
+            screens_asleep: s.screens_asleep || s.displays_off,
             fullscreen: s.fullscreen,
             on_battery: s.on_battery,
             deep_sleep: self.deep_sleep.load(Ordering::Relaxed),
@@ -355,6 +379,73 @@ fn run_hyprland(
     }
 }
 
+/// How often the Hyprland session state is polled. Omarchy's lock blanks
+/// the displays 5 s after locking; pausing well before that keeps the
+/// wallpaper from presenting into a surface nobody shows.
+const SESSION_POLL: Duration = Duration::from_secs(2);
+
+/// Polls `j/monitors` for a session lock and DPMS-off displays.
+fn watch_hyprland_session(
+    state: &Arc<Mutex<PowerState>>,
+    recompute: impl Fn() + Send + Sync + 'static,
+) -> Result<(), String> {
+    let signature = std::env::var("HYPRLAND_INSTANCE_SIGNATURE")
+        .map_err(|_| "HYPRLAND_INSTANCE_SIGNATURE not set".to_string())?;
+    let runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/0".into());
+    let cmd_path = format!("{runtime}/hypr/{signature}/.socket.sock");
+    loop {
+        // Unreachable socket (Hyprland restarting): keep the last state.
+        if let Some(session) = query_monitors(&cmd_path).as_deref().and_then(session_state) {
+            let mut s = state.lock().unwrap();
+            let changed = (s.compositor_locked, s.displays_off) != (session.locked, session.displays_off);
+            s.compositor_locked = session.locked;
+            s.displays_off = session.displays_off;
+            drop(s);
+            if changed {
+                recompute();
+            }
+        }
+        std::thread::sleep(SESSION_POLL);
+    }
+}
+
+fn query_monitors(cmd_path: &str) -> Option<String> {
+    let mut cmd = UnixStream::connect(cmd_path).ok()?;
+    cmd.set_read_timeout(Some(Duration::from_secs(2))).ok();
+    cmd.write_all(b"j/monitors").ok()?;
+    let mut reply = String::new();
+    cmd.read_to_string(&mut reply).ok()?;
+    Some(reply)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SessionState {
+    locked: bool,
+    displays_off: bool,
+}
+
+/// Reads Hyprland's `j/monitors` reply. A held ext-session-lock shows up as
+/// `LOCK` in a monitor's `solitaryBlockedBy` (the check behind Omarchy's
+/// `omarchy-hyprland-session-locked`); displays are off when every enabled
+/// monitor reports `dpmsStatus: false`.
+fn session_state(reply: &str) -> Option<SessionState> {
+    let monitors: Vec<serde_json::Value> = serde_json::from_str(reply.trim()).ok()?;
+    let enabled: Vec<&serde_json::Value> = monitors
+        .iter()
+        .filter(|m| !m.get("disabled").and_then(|d| d.as_bool()).unwrap_or(false))
+        .collect();
+    let locked = enabled.iter().any(|m| {
+        m.get("solitaryBlockedBy")
+            .and_then(|b| b.as_array())
+            .is_some_and(|reasons| reasons.iter().any(|r| r.as_str() == Some("LOCK")))
+    });
+    let displays_off = !enabled.is_empty()
+        && enabled
+            .iter()
+            .all(|m| m.get("dpmsStatus").and_then(|d| d.as_bool()) == Some(false));
+    Some(SessionState { locked, displays_off })
+}
+
 /// Queries `j/activewindow` and returns whether it is fullscreen.
 fn query_fullscreen(cmd_path: &str) -> Option<bool> {
     let mut cmd = UnixStream::connect(cmd_path).ok()?;
@@ -366,4 +457,33 @@ fn query_fullscreen(cmd_path: &str) -> Option<bool> {
     let value: serde_json::Value = serde_json::from_str(reply.trim()).ok()?;
     // fullscreen: 0 none, 1 real, 2 fake (maximized pseudo-fullscreen).
     Some(value.get("fullscreen")?.as_i64()? != 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Trimmed `hyprctl -j monitors` replies from Hyprland 0.56 (Omarchy v4).
+    const UNLOCKED: &str = r#"[{"name":"DP-3","disabled":false,"dpmsStatus":true,"solitaryBlockedBy":["WINDOWED","CANDIDATE"]}]"#;
+    const LOCKED_BLANKED: &str = r#"[{"name":"DP-3","disabled":false,"dpmsStatus":false,"solitaryBlockedBy":["LOCK","WINDOWED","CANDIDATE"]}]"#;
+
+    #[test]
+    fn omarchy_lock_and_blank_are_detected() {
+        assert_eq!(session_state(UNLOCKED), Some(SessionState { locked: false, displays_off: false }));
+        assert_eq!(session_state(LOCKED_BLANKED), Some(SessionState { locked: true, displays_off: true }));
+    }
+
+    #[test]
+    fn displays_are_off_only_when_every_enabled_monitor_is() {
+        let one_on = r#"[{"name":"DP-3","disabled":false,"dpmsStatus":false},{"name":"HDMI-A-1","disabled":false,"dpmsStatus":true}]"#;
+        assert_eq!(session_state(one_on).unwrap().displays_off, false);
+        let disabled_ignored = r#"[{"name":"DP-3","disabled":false,"dpmsStatus":false},{"name":"HDMI-A-1","disabled":true,"dpmsStatus":true}]"#;
+        assert_eq!(session_state(disabled_ignored).unwrap().displays_off, true);
+        assert_eq!(session_state("[]"), Some(SessionState { locked: false, displays_off: false }));
+    }
+
+    #[test]
+    fn unreadable_replies_keep_the_previous_state() {
+        assert_eq!(session_state("unknown request"), None);
+    }
 }

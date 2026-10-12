@@ -208,9 +208,12 @@ mod gpu {
         pub size_px: (f32, f32),
         /// Native/integer-scale buffer ratio (GpuLayerSurface::point_scale).
         pub point_scale: f32,
-        /// When the frame callback for the last present was requested;
-        /// None once answered (or when pacing by timer).
-        pub frame_requested: Option<Instant>,
+        /// The frame callback of the last present is unanswered. Nothing is
+        /// drawn until the compositor answers it: compositors withhold
+        /// callbacks while they do not show a surface (blanked output,
+        /// session lock) and keep its buffers, so presenting anyway only
+        /// waits on images that are never released.
+        pub frame_pending: bool,
         pub last_draw: Option<Instant>,
         /// Something visible changed: draw once even while paused.
         pub dirty: bool,
@@ -218,11 +221,6 @@ mod gpu {
         /// Declared after the presenter so raw pointers are dropped first.
         pub session: crate::web::wayland::GpuLayerSurface,
     }
-
-    /// How long a frame callback may stay unanswered before the output is
-    /// drawn anyway. Compositors may withhold callbacks for surfaces they
-    /// are not showing; this keeps ~1 fps there instead of stalling.
-    const FRAME_CALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
     impl GpuOutput {
         /// Points this output at `native` without touching its swapchain:
@@ -329,15 +327,15 @@ mod gpu {
         /// wallpaper changes repaint it once. ASCII outputs only present when
         /// the clip frame changes.
         ///
-        /// `sync` paces by frame callbacks (FPS cap 0): an output draws again
-        /// only after the compositor answered its last present, i.e. at its
-        /// monitor's refresh rate. Returns how long until an idle ASCII
-        /// output needs its next clip frame, for the caller to wake up then.
+        /// An output draws again only once the compositor answered its last
+        /// present (see `GpuOutput::frame_pending`), so it never outpaces its
+        /// monitor and stops entirely while it is not shown. Returns how long
+        /// until an idle ASCII output needs its next clip frame, for the
+        /// caller to wake up then.
         pub fn tick(
             &mut self,
             paused: bool,
             ascii: &library::ASCIISettings,
-            sync: bool,
         ) -> Option<std::time::Duration> {
             let style = AsciiStyle {
                 palette: (ascii.color_mode == library::ASCIIColorMode::Omarchy)
@@ -364,10 +362,7 @@ mod gpu {
             let mut wake: Option<std::time::Duration> = None;
             for i in 0..self.outputs.len() {
                 let out = &self.outputs[i];
-                let waiting = out
-                    .frame_requested
-                    .is_some_and(|requested| now - requested < FRAME_CALLBACK_TIMEOUT);
-                if sync && waiting {
+                if out.frame_pending {
                     continue;
                 }
                 let due = match &out.scene {
@@ -394,15 +389,12 @@ mod gpu {
                 };
                 let scaled = delta * self.speed;
                 let out = &mut self.outputs[i];
-                out.dirty = false;
-                out.last_draw = Some(now);
-                out.frame_requested = sync.then(|| {
-                    out.session.request_frame();
-                    now
-                });
+                // Rides on the present's commit; a skipped frame leaves it
+                // queued for the next one.
+                out.session.request_frame();
                 let GpuOutput { presenter, scene, .. } = out;
                 let size = presenter.size();
-                presenter.present(|encoder, view| match scene {
+                let presented = presenter.present(|encoder, view| match scene {
                     Scene::Particles(renderer) => {
                         renderer.encode(encoder, view, uniforms.as_ref().unwrap(), background, scaled)
                     }
@@ -411,6 +403,11 @@ mod gpu {
                         player.encode(encoder, view, size, &style);
                     }
                 });
+                if presented {
+                    out.dirty = false;
+                    out.last_draw = Some(now);
+                    out.frame_pending = true;
+                }
             }
             wake
         }
@@ -534,7 +531,7 @@ fn switch_renderer(
                             scene,
                             size_px: (session.size_px.0 as f32, session.size_px.1 as f32),
                             point_scale: session.point_scale,
-                            frame_requested: None,
+                            frame_pending: false,
                             last_draw: None,
                             dirty: true,
                             session,
@@ -563,10 +560,6 @@ fn switch_renderer(
             rt.wallpaper = wallpaper_id.to_string();
             rt.last_tick = None;
             rt.mark_dirty();
-            // Reused presenters may still wait on a callback from before.
-            for out in &mut rt.outputs {
-                out.frame_requested = None;
-            }
             if !rt.loop_running {
                 rt.loop_running = true;
                 start_gpu_loop(state.clone(), gpu_rt.clone());
@@ -712,7 +705,7 @@ fn run_tick(state: &Rc<RefCell<control::DaemonState>>, gpu_rt: &Rc<RefCell<gpu::
             st.flags.fps_cap.load(std::sync::atomic::Ordering::Relaxed) == 0,
         )
     };
-    let wake = gpu_rt.borrow_mut().tick(paused, &ascii, sync);
+    let wake = gpu_rt.borrow_mut().tick(paused, &ascii);
     if let (true, Some(delay)) = (sync, wake) {
         wake_after(state, gpu_rt, delay);
     }
@@ -773,11 +766,13 @@ fn watch_frame_callbacks(
         let mut answered = false;
         for out in rt.borrow_mut().outputs.iter_mut() {
             if out.session.take_frame_done() {
-                out.frame_requested = None;
+                out.frame_pending = false;
                 answered = true;
             }
         }
-        if answered {
+        // With an FPS cap the timer drives drawing; answers only unblock it.
+        let sync = st.borrow().flags.fps_cap.load(std::sync::atomic::Ordering::Relaxed) == 0;
+        if answered && sync {
             run_tick(&st, &rt);
         }
         glib::ControlFlow::Continue
@@ -835,9 +830,8 @@ fn start_gpu_loop(
         };
         // A configured cap drives drawing directly. With cap 0 frame
         // callbacks drive it and this timer only supervises at 4 Hz: it
-        // starts the callback chain, picks up resume and repaints, and
-        // recovers unanswered callbacks. While paused nothing is drawn, so
-        // it also only polls at 4 Hz.
+        // starts the callback chain and picks up resume and repaints. While
+        // paused nothing is drawn, so it also only polls at 4 Hz.
         let rate = if paused || fps == 0 { 4.0 } else { fps as f64 };
         let interval = std::time::Duration::from_secs_f64(1.0 / rate);
         glib::timeout_add_local_once(interval, move || {

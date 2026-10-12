@@ -196,6 +196,14 @@ pausan el render.
   panel de 165 Hz) y alineado con su refresco. Un límite explícito (15/30/60)
   usa un temporizador. El video ASCII solo presenta cuando cambia el frame del
   clip (~30/s) en ambos modos.
+- En ambos modos una pantalla no vuelve a presentar hasta que el compositor
+  responde al `wl_surface.frame` anterior. Con el monitor apagado (el bloqueo de
+  Omarchy lo apaga a los 5 s) Hyprland no responde ni libera los buffers, así
+  que el fondo deja de dibujar y no gasta nada hasta que vuelve.
+- Bloqueo y DPMS de Hyprland: el daemon consulta `j/monitors` cada 2 s (Hyprland
+  no emite eventos para ninguno) y entra en *deep sleep* mientras la sesión está
+  bloqueada o todas las pantallas están apagadas. El bloqueo de Omarchy no avisa
+  a logind, así que la señal `Lock` sola no basta.
 - En pausa el bucle despierta a 4 Hz en lugar de al límite de FPS.
 
 Medido con el daemon en una RTX 3060 Ti a 2560×1440 y 30 FPS: 47 MiB de VRAM,

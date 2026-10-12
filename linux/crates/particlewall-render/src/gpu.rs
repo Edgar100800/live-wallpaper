@@ -767,17 +767,22 @@ impl GpuPresenter {
     /// Acquires a swapchain image, lets `encode` record the frame into it,
     /// then submits and presents. The image is acquired before any work is
     /// recorded, so a skipped frame leaves scene state (e.g. the flow
-    /// simulation) untouched.
-    pub fn present(&mut self, encode: impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView)) {
+    /// simulation) untouched. Returns whether a frame was presented.
+    pub fn present(&mut self, encode: impl FnOnce(&mut wgpu::CommandEncoder, &wgpu::TextureView)) -> bool {
         let frame = match self.surface.get_current_texture() {
             Ok(t) => t,
+            // Every image is still held by the compositor, e.g. while the
+            // output is blanked. Reconfiguring here would allocate a fresh
+            // swapchain on each attempt while the compositor keeps the old
+            // one alive (~15 MB per image at 1440p, until OOM).
+            Err(wgpu::SurfaceError::Timeout) => return false,
             Err(_) => {
                 self.surface.configure(&self.ctx.device, &self.config);
                 match self.surface.get_current_texture() {
                     Ok(t) => t,
                     Err(e) => {
                         eprintln!("pw: GPU frame skipped ({e})");
-                        return;
+                        return false;
                     }
                 }
             }
@@ -790,6 +795,7 @@ impl GpuPresenter {
         encode(&mut encoder, &view);
         self.ctx.queue.submit(Some(encoder.finish()));
         frame.present();
+        true
     }
 }
 

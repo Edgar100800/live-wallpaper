@@ -168,11 +168,34 @@ Medido en RTX 3060 Ti, salida DP-3 2560×1440 con escala 1,25, 30 FPS.
   compositor responde; el socket se vigila desde el bucle de GLib. Medido en
   DP-3 (164,8 Hz): partículas a 164 frames/s (4,2 % de un núcleo), video ASCII a
   30 frames/s (solo cuando cambia el frame del clip), 0 en pausa.
-- Si un callback no llega en 1 s la salida dibuja igualmente (~1 fps mientras
-  el compositor no muestra la superficie). Un supervisor a 4 Hz arranca la
-  cadena, recoge la reanudación y los repintados.
+- Un supervisor a 4 Hz arranca la cadena, recoge la reanudación y los
+  repintados.
 - Límites explícitos siguen con temporizador; el ASCII también omite frames
   repetidos ahí. `PW_LOG_FPS=1` registra frames presentados por salida.
+
+### OOM con la pantalla bloqueada (2026-10-12)
+
+- Síntoma: con el fondo activo, cada bloqueo nocturno acababa en OOM en ~1 h
+  (8, 11 y 12 de octubre) y Hyprland caía. Sin ParticleWall, bloqueos de 17 h
+  sin problema.
+- Causa: el bloqueo de Omarchy apaga el monitor (DPMS) a los 5 s. Con el monitor
+  apagado (basta eso, con o sin bloqueo) Hyprland deja de responder a
+  `wl_surface.frame` y retiene los buffers. El
+  daemon presentaba igualmente cada 1 s (o al límite de FPS); el acquire agotaba
+  su timeout (1 s) y `GpuPresenter::present` reconfiguraba la superficie, lo que
+  crea un swapchain nuevo mientras Hyprland conserva el anterior: ~14,7 MiB/s de
+  VRAM, que al llenarse (8 GB, ~8 min) se derramaba a RAM hasta el OOM.
+- Arreglo, en tres capas:
+  - un `Timeout` del acquire ya no reconfigura la superficie (salta el frame);
+  - en ambos modos una salida no presenta hasta que el compositor responde a
+    su callback anterior, sin timeout: con el monitor apagado no dibuja nada;
+  - el monitor de energía consulta `j/monitors` de Hyprland cada 2 s y pasa a
+    *deep sleep* con la sesión bloqueada (`LOCK` en `solitaryBlockedBy`) o con
+    todas las pantallas apagadas. El bloqueo de Omarchy no emite `Lock` en
+    logind, por eso el daemon nunca se pausaba al bloquear.
+- Verificación: monitor apagado 30–40 s con el daemon activo; VRAM de
+  +12,8–14,2 MiB/s antes a 0,0 MiB/s después, con *deep sleep* a los ≤ 2 s y
+  vuelta a *active* al encender.
 
 ### Pendiente del port
 
