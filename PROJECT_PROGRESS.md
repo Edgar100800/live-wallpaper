@@ -197,6 +197,25 @@ Medido en RTX 3060 Ti, salida DP-3 2560×1440 con escala 1,25, 30 FPS.
   +12,8–14,2 MiB/s antes a 0,0 MiB/s después, con *deep sleep* a los ≤ 2 s y
   vuelta a *active* al encender.
 
+### Fondo perdido tras desconectar el monitor (2026-10-13)
+
+- Síntoma: tras ~6 h de bloqueo el fondo no volvió al desbloquear; el proceso
+  seguía vivo, sin capa `particlewall` en DP-3.
+- Causa: con el monitor en standby profundo DP-3 se desconectó del todo
+  (hotplug DRM, no solo DPMS). Hyprland cerró la capa (`closed`) y anunció una
+  `wl_output` nueva al volver. El daemon leía la lista de salidas una sola vez al
+  conectar e ignoraba `closed` tras el configure, así que nunca recreó la
+  superficie.
+- Arreglo: la conexión GPU sigue las `wl_output` (alta y `global_remove`) y el
+  `closed` de cada capa; el host suelta el presentador cerrado (antes que la
+  superficie) y mapea el fondo actual en las salidas sin presentador,
+  reintentando hasta 5 veces. La salida `FALLBACK` de Hyprland (sin monitores)
+  se ignora y cuenta como pantallas apagadas: *deep sleep* en vez de dibujar
+  donde nadie lo ve.
+- Verificación: salida headless creada y quitada en caliente (24 ciclos, VRAM
+  fija en 51 MiB); DP-3 deshabilitado con solo `FALLBACK` activo: *deep sleep*
+  y fondo de vuelta en DP-3 al reactivarlo, sin reiniciar el proceso.
+
 ### Pendiente del port
 
 - [ ] Verificación en el Mac físico: `swift test` + `build-app.sh` con el MSL

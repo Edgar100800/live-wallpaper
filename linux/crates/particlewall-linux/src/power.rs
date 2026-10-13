@@ -427,22 +427,23 @@ struct SessionState {
 /// Reads Hyprland's `j/monitors` reply. A held ext-session-lock shows up as
 /// `LOCK` in a monitor's `solitaryBlockedBy` (the check behind Omarchy's
 /// `omarchy-hyprland-session-locked`); displays are off when every enabled
-/// monitor reports `dpmsStatus: false`.
+/// monitor reports `dpmsStatus: false` or none is connected (only
+/// Hyprland's placeholder output is left).
 fn session_state(reply: &str) -> Option<SessionState> {
     let monitors: Vec<serde_json::Value> = serde_json::from_str(reply.trim()).ok()?;
     let enabled: Vec<&serde_json::Value> = monitors
         .iter()
         .filter(|m| !m.get("disabled").and_then(|d| d.as_bool()).unwrap_or(false))
+        .filter(|m| m.get("name").and_then(|n| n.as_str()) != Some(crate::layer::FALLBACK_OUTPUT))
         .collect();
     let locked = enabled.iter().any(|m| {
         m.get("solitaryBlockedBy")
             .and_then(|b| b.as_array())
             .is_some_and(|reasons| reasons.iter().any(|r| r.as_str() == Some("LOCK")))
     });
-    let displays_off = !enabled.is_empty()
-        && enabled
-            .iter()
-            .all(|m| m.get("dpmsStatus").and_then(|d| d.as_bool()) == Some(false));
+    let displays_off = enabled
+        .iter()
+        .all(|m| m.get("dpmsStatus").and_then(|d| d.as_bool()) == Some(false));
     Some(SessionState { locked, displays_off })
 }
 
@@ -479,7 +480,14 @@ mod tests {
         assert_eq!(session_state(one_on).unwrap().displays_off, false);
         let disabled_ignored = r#"[{"name":"DP-3","disabled":false,"dpmsStatus":false},{"name":"HDMI-A-1","disabled":true,"dpmsStatus":true}]"#;
         assert_eq!(session_state(disabled_ignored).unwrap().displays_off, true);
-        assert_eq!(session_state("[]"), Some(SessionState { locked: false, displays_off: false }));
+    }
+
+    #[test]
+    fn displays_are_off_while_no_monitor_is_connected() {
+        // Hyprland 0.56 after the only monitor dropped off DisplayPort.
+        let fallback_only = r#"[{"name":"FALLBACK","disabled":false,"dpmsStatus":true}]"#;
+        assert_eq!(session_state(fallback_only), Some(SessionState { locked: false, displays_off: true }));
+        assert_eq!(session_state("[]").unwrap().displays_off, true);
     }
 
     #[test]

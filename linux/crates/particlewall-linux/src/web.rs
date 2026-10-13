@@ -269,6 +269,8 @@ mod gpu {
         pub clip_time: f64,
         /// Deadline of the pending one-shot wake-up for an idle ASCII output.
         pub kick_at: Option<Instant>,
+        /// An output hotplug follow-up (sync_outputs) is scheduled.
+        pub output_sync_pending: bool,
     }
 
     impl GpuRuntime {
@@ -289,6 +291,25 @@ mod gpu {
                 self.brightness = (w as f32).clamp(0.25, 10.0);
             }
             self.mark_dirty();
+        }
+
+        /// Drops presenters whose surface the compositor closed because its
+        /// output went away. GpuOutput drops the presenter before the surface.
+        pub fn drop_closed_outputs(&mut self) {
+            for list in [&mut self.outputs, &mut self.parked] {
+                list.retain(|out| {
+                    let closed = out.session.is_closed();
+                    if closed {
+                        println!("pw: output {} went away", out.id);
+                    }
+                    !closed
+                });
+            }
+        }
+
+        /// Every named output has an active presenter.
+        pub fn covers(&self, names: &[String]) -> bool {
+            names.iter().all(|name| self.outputs.iter().any(|out| out.id == *name))
         }
 
         /// Repaints every output once, even while paused.
@@ -362,7 +383,8 @@ mod gpu {
             let mut wake: Option<std::time::Duration> = None;
             for i in 0..self.outputs.len() {
                 let out = &self.outputs[i];
-                if out.frame_pending {
+                // A closed surface waits for sync_outputs to replace it.
+                if out.frame_pending || out.session.is_closed() {
                     continue;
                 }
                 let due = match &out.scene {
@@ -452,10 +474,13 @@ fn switch_renderer(
     if gpu_capable {
         clear_web_children(state, &windows);
 
-        // Idempotency: already presenting this wallpaper on the GPU.
+        gpu_rt.borrow_mut().drop_closed_outputs();
+
+        // Idempotency: already presenting this wallpaper on every output.
         {
             let rt = gpu_rt.borrow();
-            if !rt.outputs.is_empty() && rt.wallpaper == wallpaper_id {
+            let covered = rt.wl.as_ref().is_none_or(|wl| rt.covers(&wl.output_names()));
+            if !rt.outputs.is_empty() && rt.wallpaper == wallpaper_id && covered {
                 return format!("{{\"renderer\":\"gpu\",\"wallpaper\":\"{wallpaper_id}\"}}\n");
             }
         }
@@ -742,8 +767,52 @@ fn wake_after(
     });
 }
 
+/// How many times sync_outputs retries an output that appeared but did not map.
+#[cfg(feature = "gpu")]
+const OUTPUT_SYNC_RETRIES: u32 = 5;
+
+/// Follows monitor hotplug. A panel in deep standby can drop off
+/// DisplayPort and come back as a new wl_output; the compositor closes the
+/// old layer surface, so without this the wallpaper stays gone until a
+/// restart. Drops presenters of closed surfaces and maps the current GPU
+/// wallpaper on outputs that have none.
+#[cfg(feature = "gpu")]
+fn sync_outputs(
+    state: &Rc<RefCell<control::DaemonState>>,
+    gpu_rt: &Rc<RefCell<gpu::GpuRuntime>>,
+    attempt: u32,
+) {
+    gpu_rt.borrow_mut().drop_closed_outputs();
+    let wallpaper = state.borrow().wallpaper.clone();
+    // A web wallpaper keeps the GPU presenters parked: nothing to map.
+    if native_wallpaper(&wallpaper).is_none() {
+        return;
+    }
+    let Some(wl) = gpu_rt.borrow().wl.clone() else { return };
+    // Lets a just-announced output deliver its name.
+    if let Err(e) = wl.roundtrip() {
+        eprintln!("pw: {e}");
+        return;
+    }
+    let names = wl.output_names();
+    if gpu_rt.borrow().covers(&names) {
+        return;
+    }
+    let reply = switch_renderer(state, gpu_rt, &wallpaper);
+    println!("pw: outputs {names:?}: {}", reply.trim_end());
+    if !gpu_rt.borrow().covers(&wl.output_names()) && attempt < OUTPUT_SYNC_RETRIES {
+        let (st, rt) = (Rc::downgrade(state), Rc::downgrade(gpu_rt));
+        glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
+            if let (Some(st), Some(rt)) = (st.upgrade(), rt.upgrade()) {
+                sync_outputs(&st, &rt, attempt + 1);
+            }
+        });
+    }
+}
+
 /// Feeds frame callbacks from the dedicated Wayland connection into the
-/// render loop: each answered callback lets its output draw again.
+/// render loop: each answered callback lets its output draw again. Output
+/// changes schedule one sync_outputs once the burst of events settles.
 #[cfg(feature = "gpu")]
 fn watch_frame_callbacks(
     state: &Rc<RefCell<control::DaemonState>>,
@@ -764,11 +833,21 @@ fn watch_frame_callbacks(
             return glib::ControlFlow::Break;
         }
         let mut answered = false;
+        let mut outputs_changed = wl.take_outputs_changed();
         for out in rt.borrow_mut().outputs.iter_mut() {
             if out.session.take_frame_done() {
                 out.frame_pending = false;
                 answered = true;
             }
+            outputs_changed |= out.session.is_closed();
+        }
+        if outputs_changed && !std::mem::replace(&mut rt.borrow_mut().output_sync_pending, true) {
+            let (st, rt) = (Rc::downgrade(&st), Rc::downgrade(&rt));
+            glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+                let (Some(st), Some(rt)) = (st.upgrade(), rt.upgrade()) else { return };
+                rt.borrow_mut().output_sync_pending = false;
+                sync_outputs(&st, &rt, 0);
+            });
         }
         // With an FPS cap the timer drives drawing; answers only unblock it.
         let sync = st.borrow().flags.fps_cap.load(std::sync::atomic::Ordering::Relaxed) == 0;
