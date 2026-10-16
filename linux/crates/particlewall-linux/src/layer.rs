@@ -14,6 +14,12 @@ use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 
 pub const NAMESPACE: &str = "particlewall";
 
+/// Hyprland's placeholder output while no monitor is connected (e.g. a
+/// panel that dropped off DisplayPort in deep standby). It is advertised
+/// like a real output but nothing on it is ever seen.
+#[allow(dead_code)] // unused by the layer spike binary
+pub const FALLBACK_OUTPUT: &str = "FALLBACK";
+
 /// Configures an unmanaged window as a full-output bottom layer surface.
 /// Must run before the window is mapped.
 pub fn setup_layer_window(window: &ApplicationWindow) {

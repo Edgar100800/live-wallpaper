@@ -21,6 +21,11 @@
 //! monitor's rate (165 Hz on a 165 Hz panel) and stops while the compositor
 //! withholds callbacks. The callback request goes out before the Vulkan WSI's
 //! commit on the same wl_display, so that commit carries it.
+//!
+//! Outputs come and go: a monitor in deep standby can drop off DisplayPort
+//! and reconnect as a new wl_output. The compositor then closes the layer
+//! surface of the old output; the host replaces it once the output is back
+//! (`take_outputs_changed`, `GpuLayerSurface::is_closed`).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -38,13 +43,20 @@ use wayland_protocols::wp::fractional_scale::v1::client::{
 };
 use wayland_protocols::wp::viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter};
 
-use crate::web::layer::NAMESPACE;
+use crate::web::layer::{FALLBACK_OUTPUT, NAMESPACE};
 
 /// Per-output info gathered from wl_output events.
 #[derive(Default)]
 struct OutInfo {
     name: Option<String>,
     scale: i32,
+}
+
+/// A bound wl_output and its registry name (needed to match GlobalRemove).
+struct Output {
+    global: u32,
+    output: WlOutput,
+    info: Arc<Mutex<OutInfo>>,
 }
 
 /// Event state for the dedicated GPU connection.
@@ -54,10 +66,12 @@ struct WState {
     shell: Option<ZwlrLayerShellV1>,
     fractional: Option<WpFractionalScaleManagerV1>,
     viewporter: Option<WpViewporter>,
-    outputs: Vec<(WlOutput, Arc<Mutex<OutInfo>>)>,
+    /// Live outputs, updated as globals are announced and removed.
+    outputs: Vec<Output>,
+    /// An output was added or removed since the last take_outputs_changed.
+    outputs_changed: bool,
     /// Latest layer-surface configure (serial, width, height, logical).
     configure: Option<(u32, u32, u32)>,
-    closed: bool,
 }
 
 impl Dispatch<WlRegistry, ()> for WState {
@@ -89,10 +103,17 @@ impl Dispatch<WlRegistry, ()> for WState {
                 "wl_output" if version >= 4 => {
                     let info = Arc::new(Mutex::new(OutInfo::default()));
                     let output: WlOutput = registry.bind(name, 4, qh, info.clone());
-                    state.outputs.push((output, info));
+                    state.outputs.push(Output { global: name, output, info });
+                    state.outputs_changed = true;
                 }
                 _ => {}
             },
+            wl_registry::Event::GlobalRemove { name } => {
+                if let Some(i) = state.outputs.iter().position(|o| o.global == name) {
+                    state.outputs.remove(i).output.release();
+                    state.outputs_changed = true;
+                }
+            }
             _ => {}
         }
     }
@@ -139,12 +160,14 @@ impl Dispatch<ZwlrLayerShellV1, ()> for WState {
     }
 }
 
-impl Dispatch<ZwlrLayerSurfaceV1, ()> for WState {
+/// The flag is set once the compositor closes the surface, e.g. because its
+/// output went away; a closed surface never shows anything again.
+impl Dispatch<ZwlrLayerSurfaceV1, Arc<AtomicBool>> for WState {
     fn event(
         state: &mut Self,
         layer_surface: &ZwlrLayerSurfaceV1,
         event: zwlr_layer_surface_v1::Event,
-        _data: &(),
+        closed: &Arc<AtomicBool>,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
@@ -153,7 +176,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for WState {
                 state.configure = Some((serial, width, height));
                 layer_surface.ack_configure(serial);
             }
-            zwlr_layer_surface_v1::Event::Closed => state.closed = true,
+            zwlr_layer_surface_v1::Event::Closed => closed.store(true, Ordering::Release),
             _ => {}
         }
     }
@@ -216,7 +239,6 @@ struct Inner {
     shell: ZwlrLayerShellV1,
     /// Native-resolution sizing; both are needed, else integer buffer scale.
     native_scaling: Option<(WpFractionalScaleManagerV1, WpViewporter)>,
-    outputs: Vec<(WlOutput, Arc<Mutex<OutInfo>>)>,
 }
 
 /// Owns the dedicated Wayland connection and creates GPU layer surfaces.
@@ -232,6 +254,8 @@ pub struct GpuLayerSurface {
     layer_surface: ZwlrLayerSurfaceV1,
     fractional: Option<WpFractionalScaleV1>,
     viewport: Option<WpViewport>,
+    /// Set when the compositor closes the layer surface.
+    closed: Arc<AtomicBool>,
     /// Set by the frame callback requested with the last present.
     frame_done: Arc<AtomicBool>,
     /// wl_display pointer of the dedicated connection.
@@ -274,7 +298,7 @@ impl WaylandGpu {
             .ok_or("missing wl_compositor global")?;
         let shell = state.shell.take().ok_or("missing zwlr_layer_shell_v1 global")?;
         let native_scaling = state.fractional.take().zip(state.viewporter.take());
-        let outputs = std::mem::take(&mut state.outputs);
+        state.outputs_changed = false;
 
         Ok(Self {
             inner: Rc::new(Inner {
@@ -285,7 +309,6 @@ impl WaylandGpu {
                 compositor,
                 shell,
                 native_scaling,
-                outputs,
             }),
         })
     }
@@ -316,24 +339,47 @@ impl WaylandGpu {
         Ok(())
     }
 
-    /// Connector names ("HDMI-A-1") of the current outputs.
+    /// Waits for the compositor to process everything sent so far, so a
+    /// just-announced output has its name.
+    pub fn roundtrip(&self) -> Result<(), String> {
+        let inner = &self.inner;
+        inner
+            .queue
+            .borrow_mut()
+            .roundtrip(&mut inner.state.borrow_mut())
+            .map(|_| ())
+            .map_err(|e| format!("wayland roundtrip: {e}"))
+    }
+
+    /// True once after an output was added or removed.
+    pub fn take_outputs_changed(&self) -> bool {
+        std::mem::take(&mut self.inner.state.borrow_mut().outputs_changed)
+    }
+
+    /// Connector names ("HDMI-A-1") of the current outputs, without
+    /// Hyprland's invisible placeholder.
     pub fn output_names(&self) -> Vec<String> {
         self.inner
+            .state
+            .borrow()
             .outputs
             .iter()
-            .filter_map(|(_, info)| info.lock().unwrap().name.clone())
+            .filter_map(|o| o.info.lock().unwrap().name.clone())
+            .filter(|name| name != FALLBACK_OUTPUT)
             .collect()
     }
 
     /// Creates and maps a full-output background layer surface for `name`.
     pub fn create_surface(&self, name: &str) -> Result<GpuLayerSurface, String> {
         let inner = &self.inner;
-        let (output, out_info) = inner
+        let (output, scale) = inner
+            .state
+            .borrow()
             .outputs
             .iter()
-            .find(|(_, info)| info.lock().unwrap().name.as_deref() == Some(name))
+            .find(|o| o.info.lock().unwrap().name.as_deref() == Some(name))
+            .map(|o| (o.output.clone(), o.info.lock().unwrap().scale.max(1)))
             .ok_or_else(|| format!("unknown output {name}"))?;
-        let scale = out_info.lock().unwrap().scale.max(1);
 
         let surface: WlSurface = inner.compositor.create_surface(&inner.qh, ());
         let preferred = Arc::new(AtomicU32::new(0));
@@ -344,8 +390,14 @@ impl WaylandGpu {
             )
         });
         let (fractional, viewport) = native.unzip();
-        let layer_surface =
-            map_background_role(inner, &surface, output, if viewport.is_some() { 1 } else { scale });
+        let closed = Arc::new(AtomicBool::new(false));
+        let layer_surface = map_background_role(
+            inner,
+            &surface,
+            &output,
+            if viewport.is_some() { 1 } else { scale },
+            closed.clone(),
+        );
 
         let wl_display = inner.conn.backend().display_ptr();
         let wl_surface = surface.id().as_ptr();
@@ -357,6 +409,7 @@ impl WaylandGpu {
             layer_surface,
             fractional,
             viewport,
+            closed,
             frame_done: Arc::new(AtomicBool::new(false)),
             wl_display: wl_display.cast(),
             wl_surface: wl_surface.cast(),
@@ -368,7 +421,8 @@ impl WaylandGpu {
             return Err(format!("null Wayland handles for {name}"));
         }
         let wants_fraction = session.viewport.is_some();
-        let (_serial, logical_w, logical_h) = wait_configure(inner, name, wants_fraction.then_some(&*preferred))?;
+        let (_serial, logical_w, logical_h) =
+            wait_configure(inner, name, &session.closed, wants_fraction.then_some(&*preferred))?;
         let (logical_w, logical_h) = (logical_w.max(1), logical_h.max(1));
         let integer_px = (logical_w * scale as u32, logical_h * scale as u32);
         let fraction = preferred.load(Ordering::Relaxed);
@@ -404,6 +458,7 @@ fn map_background_role(
     surface: &WlSurface,
     output: &WlOutput,
     scale: i32,
+    closed: Arc<AtomicBool>,
 ) -> ZwlrLayerSurfaceV1 {
     let layer_surface: ZwlrLayerSurfaceV1 = inner.shell.get_layer_surface(
         surface,
@@ -411,7 +466,7 @@ fn map_background_role(
         Layer::Bottom,
         NAMESPACE.to_string(),
         &inner.qh,
-        (),
+        closed,
     );
     layer_surface.set_anchor(Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right);
     layer_surface.set_exclusive_zone(-1);
@@ -430,6 +485,7 @@ fn map_background_role(
 fn wait_configure(
     inner: &Rc<Inner>,
     name: &str,
+    closed: &AtomicBool,
     preferred: Option<&AtomicU32>,
 ) -> Result<(u32, u32, u32), String> {
     inner.state.borrow_mut().configure = None;
@@ -450,10 +506,10 @@ fn wait_configure(
             .borrow_mut()
             .roundtrip(&mut inner.state.borrow_mut())
             .map_err(|e| format!("wayland roundtrip: {e}"))?;
-        let mut state = inner.state.borrow_mut();
-        if state.closed {
+        if closed.load(Ordering::Acquire) {
             return Err(format!("output {name} closed while configuring"));
         }
+        let mut state = inner.state.borrow_mut();
         if let Some(cfg) = state.configure.take() {
             configured = Some(cfg);
         }
@@ -465,6 +521,13 @@ impl GpuLayerSurface {
     pub fn request_frame(&self) {
         self.frame_done.store(false, Ordering::Release);
         self.surface.frame(&self._gpu.qh, self.frame_done.clone());
+    }
+
+    /// The compositor closed this surface (its output went away). It shows
+    /// nothing anymore; the host drops it and maps a new one when the
+    /// output returns.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
     }
 
     /// True once since the compositor answered the last `request_frame`.
